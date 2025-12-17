@@ -162,7 +162,8 @@ async function renderBodyChildren(ctx, body) {
         ensureListStack(ctx, out, listStack, listInfo);
         const levelState = listStack[listStack.length - 1];
         if (levelState.numId !== listInfo.numId) {
-          levelState.counter = 0;
+          const start = Number(listInfo.start ?? 1);
+          levelState.counter = Number.isFinite(start) && start > 1 ? start - 1 : 0;
           levelState.numId = listInfo.numId;
         }
         levelState.counter = (levelState.counter ?? 0) + 1;
@@ -422,13 +423,17 @@ function ensureListStack(ctx, out, listStack, listInfo) {
   while (listStack.length < listInfo.level + 1) {
     const { tag, attrs } = listInfo;
     out.push(`<${tag}${renderAttrs(attrs)}>`);
-    listStack.push({ tag, attrs, counter: 0, numId: listInfo.numId, listInfo });
+    const start = Number(listInfo.start ?? 1);
+    const counter = Number.isFinite(start) && start > 1 ? start - 1 : 0;
+    listStack.push({ tag, attrs, counter, numId: listInfo.numId, listInfo });
   }
   const current = listStack[listStack.length - 1];
   if (current.tag !== listInfo.tag) {
     out.push(`</${listStack.pop().tag}>`);
     out.push(`<${listInfo.tag}${renderAttrs(listInfo.attrs)}>`);
-    listStack.push({ tag: listInfo.tag, attrs: listInfo.attrs, counter: 0, numId: listInfo.numId, listInfo });
+    const start = Number(listInfo.start ?? 1);
+    const counter = Number.isFinite(start) && start > 1 ? start - 1 : 0;
+    listStack.push({ tag: listInfo.tag, attrs: listInfo.attrs, counter, numId: listInfo.numId, listInfo });
   } else {
     current.listInfo = listInfo;
   }
@@ -655,9 +660,14 @@ class WmlConversionContext {
     const lvl = this.numbering?.getLevel(numId, level);
     const numFmt = lvl?.numFmt ?? "decimal";
     const lvlText = lvl?.lvlText ?? "";
+    const start = lvl?.start ?? 1;
     const tag = toListTag(numFmt, this.settings.restrictToSupportedNumberingFormats, this.warnings);
     const attrs = toListAttrs(numFmt);
-    return { numId, level, numFmt, lvlText, tag, attrs };
+    if (tag === "ol") {
+      const n = Number(start);
+      if (Number.isFinite(n) && n > 1) attrs.start = String(n);
+    }
+    return { numId, level, numFmt, lvlText, start, tag, attrs };
   }
 
   getParagraphClass(p) {
@@ -1123,9 +1133,12 @@ async function readNumbering(doc) {
       if (!lvl) return null;
       const numFmtEl = lvl.children.find((c) => c instanceof XmlElement && isW(c, "numFmt"));
       const lvlTextEl = lvl.children.find((c) => c instanceof XmlElement && isW(c, "lvlText"));
+      const startEl = lvl.children.find((c) => c instanceof XmlElement && isW(c, "start"));
       const numFmt = String(numFmtEl?.attributes.get("w:val") ?? numFmtEl?.attributes.get("val") ?? "decimal");
       const lvlText = String(lvlTextEl?.attributes.get("w:val") ?? lvlTextEl?.attributes.get("val") ?? "");
-      return { numFmt, lvlText };
+      const startVal = startEl?.attributes.get("w:val") ?? startEl?.attributes.get("val") ?? null;
+      const start = startVal != null ? Number(startVal) : 1;
+      return { numFmt, lvlText, start: Number.isFinite(start) && start > 0 ? start : 1 };
     }
 
     return { getLevel };
