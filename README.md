@@ -103,6 +103,9 @@ const result = await WmlToHtmlConverter.convertToHtml(doc, {
   pageTitle: "My Document",
   additionalCss: "body { max-width: 20cm; margin: 1cm auto; }",
 
+  // Optional: include comments.xml (renders references + appended section)
+  includeComments: false,
+
   // Optional: customize list markers
   listItemImplementations: {
     default: (_lvlText, levelNumber, _numFmt) => `#${levelNumber}`,
@@ -122,12 +125,16 @@ console.log(result.warnings);
 
 Current converter coverage (high-level):
 - paragraphs/runs, basic formatting (`b/i/u`)
+- paragraph spacing (margins + basic line-height) and tabs
+- basic RTL via `w:bidi` / `w:rtl`
 - headings via `Heading1..Heading6` styles
 - hyperlinks (external)
 - lists via `numbering.xml` (basic)
-- tables (including `gridSpan`/`vMerge` and basic borders)
-- images (data URLs by default)
+- tables (including `gridSpan`/`vMerge`, basic borders, shading/padding, and header rows)
+- images (data URLs by default, with basic size hints)
+- headers/footers (per-section)
 - footnotes/endnotes (references + appended section)
+- comments (optional, when `includeComments: true`)
 
 ### Transforms (DOCX mutation)
 
