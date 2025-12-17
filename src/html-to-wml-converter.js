@@ -3,28 +3,76 @@ import { ZipArchive } from "./internal/zip.js";
 import { getDefaultZipAdapter } from "./internal/zip-adapter-auto.js";
 import { WmlDocument } from "./wml-document.js";
 import { OpenXmlPowerToolsError } from "./open-xml-powertools-error.js";
+import { base64ToBytes } from "./util/base64.js";
 
 const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+const R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const WP_NS = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
+const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const PIC_NS = "http://schemas.openxmlformats.org/drawingml/2006/picture";
 
 export const HtmlToWmlConverter = {
   // Minimal v0 implementation: accepts well-formed XHTML-as-XML (string or XmlElement).
-  // Ignores CSS and most settings; supports <p>, <br/>, <strong>/<b>, <em>/<i>, <u>.
+  // Ignores CSS and most settings; supports <p>, <br/>, <strong>/<b>, <em>/<i>, <u>,
+  // plus <h1>-<h6>, <ul>/<ol>/<li>, <table>/<tr>/<td>, <a href>, <img src="data:...">.
   async convertHtmlToWml(defaultCss, authorCss, userCss, xhtml, settings = {}, templateDoc = null) {
     const xhtmlDoc = coerceXhtml(xhtml);
     const body = findHtmlBody(xhtmlDoc.root) ?? xhtmlDoc.root;
-    const paragraphs = htmlToParagraphs(body);
+    const ctx = new HtmlToWmlContext();
+    const bodyBlocks = htmlToBlocks(body, ctx, 0);
 
-    const wml = buildWmlDocumentXml(paragraphs);
+    const wml = buildWmlDocumentXml(bodyBlocks, ctx);
 
     if (templateDoc) {
       return templateDoc.replacePartXml("/word/document.xml", wml);
     }
 
     const adapter = await getDefaultZipAdapter();
-    const bytes = await buildMinimalDocxPackage(wml, adapter);
+    const bytes = await buildMinimalDocxPackage(wml, ctx, adapter);
     return new WmlDocument(bytes, { fileName: settings?.fileName });
   },
 };
+
+class HtmlToWmlContext {
+  constructor() {
+    this.nextRelId = 10;
+    this.relationships = [];
+    this.hasNumbering = false;
+    this.media = []; // { name, bytes, contentType }
+  }
+
+  addExternalHyperlink(href) {
+    const id = `rId${this.nextRelId++}`;
+    this.relationships.push({
+      Id: id,
+      Type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+      Target: href,
+      TargetMode: "External",
+    });
+    return id;
+  }
+
+  addImageFromDataUrl(dataUrl) {
+    const parsed = parseDataUrl(dataUrl);
+    if (!parsed) return null;
+    const { contentType, bytes } = parsed;
+    const ext = contentTypeToExtension(contentType);
+    if (!ext) return null;
+
+    const index = this.media.length + 1;
+    const fileName = `image${index}.${ext}`;
+    const partName = `word/media/${fileName}`;
+    this.media.push({ name: partName, bytes, contentType });
+
+    const id = `rId${this.nextRelId++}`;
+    this.relationships.push({
+      Id: id,
+      Type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
+      Target: `media/${fileName}`,
+    });
+    return { relId: id, contentType };
+  }
+}
 
 function coerceXhtml(xhtml) {
   if (xhtml instanceof XmlDocument) return xhtml;
@@ -44,22 +92,88 @@ function findHtmlBody(root) {
   return null;
 }
 
-function htmlToParagraphs(container) {
+function htmlToBlocks(container, ctx, listLevel) {
   const out = [];
-  const ps = [];
   for (const child of container.children ?? []) {
-    if (child instanceof XmlElement && child.qname.toLowerCase() === "p") ps.push(child);
+    if (child instanceof XmlText) continue;
+    if (!(child instanceof XmlElement)) continue;
+    const tag = child.qname.toLowerCase();
+
+    if (tag === "p") {
+      out.push(makeParagraph(htmlInlineToRuns(child, ctx, { bold: false, italic: false, underline: false })));
+      continue;
+    }
+
+    if (/^h[1-6]$/.test(tag)) {
+      const level = Number(tag.slice(1));
+      out.push(makeHeading(level, htmlInlineToRuns(child, ctx, { bold: false, italic: false, underline: false })));
+      continue;
+    }
+
+    if (tag === "ol" || tag === "ul") {
+      ctx.hasNumbering = true;
+      const isOrdered = tag === "ol";
+      out.push(...listToParagraphs(child, ctx, isOrdered, listLevel));
+      continue;
+    }
+
+    if (tag === "table") {
+      out.push(makeTable(child, ctx));
+      continue;
+    }
   }
-  if (ps.length) {
-    for (const p of ps) out.push(htmlInlineToRuns(p, { bold: false, italic: false, underline: false }));
-    return out;
+
+  if (!out.length) {
+    // If no block children, treat as one paragraph.
+    out.push(makeParagraph(htmlInlineToRuns(container, ctx, { bold: false, italic: false, underline: false })));
   }
-  // If no <p>, treat the body as one paragraph.
-  out.push(htmlInlineToRuns(container, { bold: false, italic: false, underline: false }));
+
   return out;
 }
 
-function htmlInlineToRuns(el, fmt) {
+function listToParagraphs(listEl, ctx, isOrdered, listLevel) {
+  const out = [];
+  for (const li of listEl.children ?? []) {
+    if (!(li instanceof XmlElement) || li.qname.toLowerCase() !== "li") continue;
+
+    // Split li into inline content + nested lists/tables/paras.
+    const inlineContainer = new XmlElement("span", new Map(), []);
+    const nestedBlocks = [];
+    for (const c of li.children ?? []) {
+      if (c instanceof XmlText) {
+        inlineContainer.children.push(c);
+        continue;
+      }
+      if (!(c instanceof XmlElement)) continue;
+      const t = c.qname.toLowerCase();
+      if (t === "ol" || t === "ul" || t === "table" || t === "p" || /^h[1-6]$/.test(t)) {
+        nestedBlocks.push(c);
+      } else {
+        inlineContainer.children.push(c);
+      }
+    }
+
+    const runs = htmlInlineToRuns(inlineContainer, ctx, { bold: false, italic: false, underline: false });
+    out.push(makeListParagraph(runs, isOrdered ? 1 : 2, listLevel));
+
+    for (const nb of nestedBlocks) {
+      const nbTag = nb.qname.toLowerCase();
+      if (nbTag === "ol" || nbTag === "ul") {
+        ctx.hasNumbering = true;
+        out.push(...listToParagraphs(nb, ctx, nbTag === "ol", listLevel + 1));
+      } else if (nbTag === "table") {
+        out.push(makeTable(nb, ctx));
+      } else if (nbTag === "p") {
+        out.push(makeParagraph(htmlInlineToRuns(nb, ctx, { bold: false, italic: false, underline: false })));
+      } else if (/^h[1-6]$/.test(nbTag)) {
+        out.push(makeHeading(Number(nbTag.slice(1)), htmlInlineToRuns(nb, ctx, { bold: false, italic: false, underline: false })));
+      }
+    }
+  }
+  return out;
+}
+
+function htmlInlineToRuns(el, ctx, fmt) {
   const runs = [];
   for (const child of el.children ?? []) {
     if (child instanceof XmlText) {
@@ -74,29 +188,40 @@ function htmlInlineToRuns(el, fmt) {
       runs.push(makeBreakRun());
       continue;
     }
+    if (tag === "a") {
+      const href = child.attributes.get("href");
+      const rid = href ? ctx.addExternalHyperlink(String(href)) : null;
+      const inner = htmlInlineToRuns(child, ctx, fmt);
+      runs.push(...(rid ? wrapHyperlinkRuns(rid, inner) : inner));
+      continue;
+    }
+    if (tag === "img") {
+      const src = child.attributes.get("src");
+      const img = src ? ctx.addImageFromDataUrl(String(src)) : null;
+      if (img) runs.push(makeImageRun(img.relId));
+      continue;
+    }
     if (tag === "strong" || tag === "b") {
-      runs.push(...htmlInlineToRuns(child, { ...fmt, bold: true }));
+      runs.push(...htmlInlineToRuns(child, ctx, { ...fmt, bold: true }));
       continue;
     }
     if (tag === "em" || tag === "i") {
-      runs.push(...htmlInlineToRuns(child, { ...fmt, italic: true }));
+      runs.push(...htmlInlineToRuns(child, ctx, { ...fmt, italic: true }));
       continue;
     }
     if (tag === "u") {
-      runs.push(...htmlInlineToRuns(child, { ...fmt, underline: true }));
+      runs.push(...htmlInlineToRuns(child, ctx, { ...fmt, underline: true }));
       continue;
     }
     // Unknown inline element: recurse without changing formatting.
-    runs.push(...htmlInlineToRuns(child, fmt));
+    runs.push(...htmlInlineToRuns(child, ctx, fmt));
   }
   return runs;
 }
 
-function buildWmlDocumentXml(paragraphRuns) {
+function buildWmlDocumentXml(bodyBlocks, ctx) {
   const bodyChildren = [];
-  for (const runs of paragraphRuns) {
-    bodyChildren.push(makeElement("w:p", new Map(), runs));
-  }
+  for (const block of bodyBlocks) bodyChildren.push(block);
   bodyChildren.push(
     makeElement("w:sectPr", new Map(), [
       makeElement("w:pgSz", new Map([["w:w", "12240"], ["w:h", "15840"]]), []),
@@ -118,10 +243,52 @@ function buildWmlDocumentXml(paragraphRuns) {
 
   const root = makeElement(
     "w:document",
-    new Map([["xmlns:w", W_NS]]),
+    new Map([
+      ["xmlns:w", W_NS],
+      ["xmlns:r", R_NS],
+      ["xmlns:wp", WP_NS],
+      ["xmlns:a", A_NS],
+      ["xmlns:pic", PIC_NS],
+    ]),
     [makeElement("w:body", new Map(), bodyChildren)],
   );
   return new XmlDocument(root);
+}
+
+function makeParagraph(runs) {
+  return makeElement("w:p", new Map(), runs);
+}
+
+function makeHeading(level, runs) {
+  const styleId = `Heading${level}`;
+  const pPr = makeElement("w:pPr", new Map(), [makeElement("w:pStyle", new Map([["w:val", styleId]]), [])]);
+  return makeElement("w:p", new Map(), [pPr, ...runs]);
+}
+
+function makeListParagraph(runs, numId, ilvl) {
+  const pPr = makeElement("w:pPr", new Map(), [
+    makeElement("w:numPr", new Map(), [
+      makeElement("w:ilvl", new Map([["w:val", String(ilvl)]]), []),
+      makeElement("w:numId", new Map([["w:val", String(numId)]]), []),
+    ]),
+  ]);
+  return makeElement("w:p", new Map(), [pPr, ...runs]);
+}
+
+function makeTable(tableEl, ctx) {
+  const rows = [];
+  for (const tr of tableEl.children ?? []) {
+    if (!(tr instanceof XmlElement) || tr.qname.toLowerCase() !== "tr") continue;
+    const cells = [];
+    for (const td of tr.children ?? []) {
+      if (!(td instanceof XmlElement) || (td.qname.toLowerCase() !== "td" && td.qname.toLowerCase() !== "th")) continue;
+      const cellBlocks = htmlToBlocks(td, ctx, 0);
+      const tcChildren = cellBlocks.length ? cellBlocks : [makeParagraph([makeRun("", { bold: false, italic: false, underline: false })])];
+      cells.push(makeElement("w:tc", new Map(), [...tcChildren]));
+    }
+    rows.push(makeElement("w:tr", new Map(), cells));
+  }
+  return makeElement("w:tbl", new Map(), rows);
 }
 
 function makeRun(text, fmt) {
@@ -143,17 +310,52 @@ function makeBreakRun() {
   return makeElement("w:r", new Map(), [makeElement("w:br", new Map(), [])]);
 }
 
+function wrapHyperlinkRuns(rid, runs) {
+  return [
+    makeElement("w:hyperlink", new Map([["r:id", rid]]), runs),
+  ];
+}
+
+function makeImageRun(rid) {
+  // Minimal inline DrawingML template.
+  const cx = "914400"; // 1 inch
+  const cy = "914400";
+  const blip = makeElement("a:blip", new Map([["r:embed", rid]]), []);
+  const blipFill = makeElement("pic:blipFill", new Map(), [blip]);
+  const pic = makeElement("pic:pic", new Map(), [blipFill]);
+  const graphicData = makeElement("a:graphicData", new Map([["uri", PIC_NS]]), [pic]);
+  const graphic = makeElement("a:graphic", new Map(), [graphicData]);
+  const extent = makeElement("wp:extent", new Map([["cx", cx], ["cy", cy]]), []);
+  const inline = makeElement("wp:inline", new Map(), [extent, graphic]);
+  const drawing = makeElement("w:drawing", new Map(), [inline]);
+  return makeElement("w:r", new Map(), [drawing]);
+}
+
 function makeElement(qname, attributes, children) {
   return new XmlElement(qname, attributes, children);
 }
 
-async function buildMinimalDocxPackage(wmlXmlDoc, adapter) {
+async function buildMinimalDocxPackage(wmlXmlDoc, ctx, adapter) {
+  const ctDefaults = [
+    { Extension: "rels", ContentType: "application/vnd.openxmlformats-package.relationships+xml" },
+    { Extension: "xml", ContentType: "application/xml" },
+  ];
+  const ctOverrides = [
+    { PartName: "/word/document.xml", ContentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml" },
+    { PartName: "/word/styles.xml", ContentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml" },
+  ];
+  if (ctx.hasNumbering) {
+    ctOverrides.push({ PartName: "/word/numbering.xml", ContentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml" });
+  }
+  for (const m of ctx.media) {
+    const ext = m.name.split(".").pop().toLowerCase();
+    if (!ctDefaults.some((d) => d.Extension === ext)) ctDefaults.push({ Extension: ext, ContentType: m.contentType });
+  }
+
   const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
-  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+${ctDefaults.map((d) => `  <Default Extension="${d.Extension}" ContentType="${d.ContentType}"/>`).join("\n")}
+${ctOverrides.map((o) => `  <Override PartName="${o.PartName}" ContentType="${o.ContentType}"/>`).join("\n")}
 </Types>
 `;
 
@@ -166,30 +368,98 @@ async function buildMinimalDocxPackage(wmlXmlDoc, adapter) {
   const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  ${ctx.hasNumbering ? '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>' : ""}
+  ${ctx.relationships.map((r) => {
+    const mode = r.TargetMode ? ` TargetMode="${r.TargetMode}"` : "";
+    return `<Relationship Id="${r.Id}" Type="${r.Type}" Target="${r.Target}"${mode}/>`;
+  }).join("\n  ")}
 </Relationships>
 `;
 
-  const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+  const styles = buildStylesXml();
+
+  const numbering = ctx.hasNumbering ? buildNumberingXml() : null;
+
+  const documentXmlText = serializeXml(wmlXmlDoc, { xmlDeclaration: true });
+
+  const enc = new TextEncoder();
+  const entries = [
+    { name: "[Content_Types].xml", bytes: enc.encode(contentTypes), compressionMethod: 8 },
+    { name: "_rels/.rels", bytes: enc.encode(rootRels), compressionMethod: 8 },
+    { name: "word/document.xml", bytes: enc.encode(documentXmlText), compressionMethod: 8 },
+    { name: "word/_rels/document.xml.rels", bytes: enc.encode(docRels), compressionMethod: 8 },
+    { name: "word/styles.xml", bytes: enc.encode(styles), compressionMethod: 8 },
+  ];
+
+  if (numbering) entries.push({ name: "word/numbering.xml", bytes: enc.encode(numbering), compressionMethod: 8 });
+  for (const m of ctx.media) entries.push({ name: m.name, bytes: m.bytes, compressionMethod: 0 });
+
+  return ZipArchive.build(entries, { adapter, level: 6 });
+}
+
+function buildStylesXml() {
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="${W_NS}">
   <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
     <w:name w:val="Normal"/>
     <w:qFormat/>
   </w:style>
+  ${[1, 2, 3, 4, 5, 6].map((n) => `
+  <w:style w:type="paragraph" w:styleId="Heading${n}">
+    <w:name w:val="heading ${n}"/>
+    <w:qFormat/>
+    <w:rPr><w:b/><w:sz w:val="${Math.max(28, 48 - (n - 1) * 4)}"/></w:rPr>
+  </w:style>`).join("\n")}
 </w:styles>
 `;
-
-  const enc = new TextEncoder();
-  const documentXmlText = serializeXml(wmlXmlDoc, { xmlDeclaration: true });
-
-  return ZipArchive.build(
-    [
-      { name: "[Content_Types].xml", bytes: enc.encode(contentTypes), compressionMethod: 8 },
-      { name: "_rels/.rels", bytes: enc.encode(rootRels), compressionMethod: 8 },
-      { name: "word/document.xml", bytes: enc.encode(documentXmlText), compressionMethod: 8 },
-      { name: "word/_rels/document.xml.rels", bytes: enc.encode(docRels), compressionMethod: 8 },
-      { name: "word/styles.xml", bytes: enc.encode(styles), compressionMethod: 8 },
-    ],
-    { adapter, level: 6 },
-  );
 }
 
+function buildNumberingXml() {
+  // numId=1 decimal, numId=2 bullet; supports 9 levels each.
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="${W_NS}">
+  <w:abstractNum w:abstractNumId="1">
+    ${Array.from({ length: 9 }, (_, i) => `
+    <w:lvl w:ilvl="${i}">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="decimal"/>
+      <w:lvlText w:val="%${i + 1}."/>
+    </w:lvl>`).join("\n")}
+  </w:abstractNum>
+  <w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>
+
+  <w:abstractNum w:abstractNumId="2">
+    ${Array.from({ length: 9 }, (_, i) => `
+    <w:lvl w:ilvl="${i}">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="bullet"/>
+      <w:lvlText w:val="•"/>
+    </w:lvl>`).join("\n")}
+  </w:abstractNum>
+  <w:num w:numId="2"><w:abstractNumId w:val="2"/></w:num>
+</w:numbering>
+`;
+}
+
+function parseDataUrl(url) {
+  const s = String(url);
+  if (!s.startsWith("data:")) return null;
+  const comma = s.indexOf(",");
+  if (comma === -1) return null;
+  const meta = s.slice(5, comma);
+  const data = s.slice(comma + 1);
+  const isBase64 = meta.includes(";base64");
+  const contentType = meta.split(";")[0] || "application/octet-stream";
+  if (!isBase64) return null;
+  const bytes = base64ToBytes(data);
+  return { contentType, bytes };
+}
+
+function contentTypeToExtension(ct) {
+  const v = String(ct).toLowerCase();
+  if (v === "image/png") return "png";
+  if (v === "image/jpeg") return "jpg";
+  if (v === "image/gif") return "gif";
+  if (v === "image/webp") return "webp";
+  return null;
+}
