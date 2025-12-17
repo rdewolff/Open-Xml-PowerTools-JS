@@ -1,5 +1,6 @@
 import { parseXml, XmlDocument, XmlElement, XmlText, serializeXml } from "./internal/xml.js";
 import { bytesToBase64 } from "./util/base64.js";
+import { readWmlStyles, parseParagraphProperties, parseRunProperties } from "./internal/wml-styles.js";
 
 const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
@@ -79,6 +80,10 @@ async function renderBodyChildren(ctx, body) {
       if (listInfo) {
         ensureListStack(ctx, out, listStack, listInfo);
         const levelState = listStack[listStack.length - 1];
+        if (levelState.numId !== listInfo.numId) {
+          levelState.counter = 0;
+          levelState.numId = listInfo.numId;
+        }
         levelState.counter = (levelState.counter ?? 0) + 1;
         const marker = ctx.renderListMarker(listInfo, levelState.counter);
         const markerHtml = marker ? `<span class="${escapeHtml(marker.className)}">${escapeHtml(marker.text)}</span>` : "";
@@ -91,7 +96,9 @@ async function renderBodyChildren(ctx, body) {
       const tag = headingLevel ? `h${headingLevel}` : "p";
       const cls = ctx.getParagraphClass(child);
       const classAttr = cls ? ` class="${escapeHtml(cls)}"` : "";
-      out.push(`<${tag}${classAttr}>${await renderParagraphContents(ctx, child)}</${tag}>`);
+      const styleAttr = ctx.getParagraphStyleAttr(child);
+      const styleHtml = styleAttr ? ` style="${escapeHtml(styleAttr)}"` : "";
+      out.push(`<${tag}${classAttr}${styleHtml}>${await renderParagraphContents(ctx, child)}</${tag}>`);
       continue;
     }
 
@@ -111,7 +118,7 @@ async function renderParagraphContents(ctx, p) {
   for (const child of p.children ?? []) {
     if (!(child instanceof XmlElement)) continue;
     if (isW(child, "r")) {
-      inner.push(await renderRun(ctx, child));
+      inner.push(await renderRun(ctx, p, child));
       continue;
     }
     if (isW(child, "hyperlink")) {
@@ -128,18 +135,18 @@ async function renderHyperlink(ctx, hyperlink) {
   const inner = [];
   for (const c of hyperlink.children ?? []) {
     if (!(c instanceof XmlElement)) continue;
-    if (isW(c, "r")) inner.push(await renderRun(ctx, c));
+    if (isW(c, "r")) inner.push(await renderRun(ctx, null, c));
   }
   const contents = inner.join("");
   if (!href) return contents;
   return `<a href="${escapeHtml(href)}">${contents}</a>`;
 }
 
-async function renderRun(ctx, r) {
-  const rPr = (r.children ?? []).find((c) => c?.qname && isW(c, "rPr")) ?? null;
-  const bold = !!(rPr && (rPr.children ?? []).some((c) => c?.qname && isW(c, "b")));
-  const italic = !!(rPr && (rPr.children ?? []).some((c) => c?.qname && isW(c, "i")));
-  const underline = !!(rPr && (rPr.children ?? []).some((c) => c?.qname && isW(c, "u")));
+async function renderRun(ctx, paragraph, r) {
+  const effective = ctx.getEffectiveRunFormatting(paragraph, r);
+  const bold = !!effective.bold;
+  const italic = !!effective.italic;
+  const underline = !!effective.underline;
   const cls = ctx.getRunClass(r);
 
   const pieces = [];
@@ -165,8 +172,10 @@ async function renderRun(ctx, r) {
   if (underline) html = `<u>${html}</u>`;
   if (italic) html = `<em>${html}</em>`;
   if (bold) html = `<strong>${html}</strong>`;
+  const styleAttr = ctx.getRunStyleAttr(effective);
   const classAttr = cls ? ` class="${escapeHtml(cls)}"` : "";
-  return html ? `<span${classAttr}>${html}</span>` : "";
+  const styleHtml = styleAttr ? ` style="${escapeHtml(styleAttr)}"` : "";
+  return html ? `<span${classAttr}${styleHtml}>${html}</span>` : "";
 }
 
 function findFirstByLocal(root, localName) {
@@ -210,13 +219,13 @@ function ensureListStack(ctx, out, listStack, listInfo) {
   while (listStack.length < listInfo.level + 1) {
     const { tag, attrs } = listInfo;
     out.push(`<${tag}${renderAttrs(attrs)}>`);
-    listStack.push({ tag, attrs, counter: 0, listInfo });
+    listStack.push({ tag, attrs, counter: 0, numId: listInfo.numId, listInfo });
   }
   const current = listStack[listStack.length - 1];
   if (current.tag !== listInfo.tag) {
     out.push(`</${listStack.pop().tag}>`);
     out.push(`<${listInfo.tag}${renderAttrs(listInfo.attrs)}>`);
-    listStack.push({ tag: listInfo.tag, attrs: listInfo.attrs, counter: 0, listInfo });
+    listStack.push({ tag: listInfo.tag, attrs: listInfo.attrs, counter: 0, numId: listInfo.numId, listInfo });
   } else {
     current.listInfo = listInfo;
   }
@@ -379,7 +388,7 @@ function filteredAttributes(attributes, settings) {
 }
 
 class WmlConversionContext {
-  constructor({ doc, mainXml, warnings, settings, rels, numbering, contentTypes }) {
+  constructor({ doc, mainXml, warnings, settings, rels, numbering, contentTypes, styles }) {
     this.doc = doc;
     this.mainXml = mainXml;
     this.warnings = warnings;
@@ -387,16 +396,18 @@ class WmlConversionContext {
     this.rels = rels;
     this.numbering = numbering;
     this.contentTypes = contentTypes;
+    this.styles = styles;
     this.generatedCssText = "";
   }
 
   static async create(doc, mainXml, warnings, settings) {
-    const [rels, numbering, contentTypes] = await Promise.all([
+    const [rels, numbering, contentTypes, styles] = await Promise.all([
       readRelationships(doc, "/word/_rels/document.xml.rels"),
       readNumbering(doc),
       readContentTypes(doc),
+      readWmlStyles(doc),
     ]);
-    return new WmlConversionContext({ doc, mainXml, warnings, settings, rels, numbering, contentTypes });
+    return new WmlConversionContext({ doc, mainXml, warnings, settings, rels, numbering, contentTypes, styles });
   }
 
   findBody() {
@@ -414,13 +425,11 @@ class WmlConversionContext {
   }
 
   getParagraphListInfo(p) {
-    const pPr = (p.children ?? []).find((c) => c instanceof XmlElement && isW(c, "pPr"));
-    const numPr = pPr?.children?.find((c) => c instanceof XmlElement && isW(c, "numPr"));
+    const eff = this.getEffectiveParagraphProperties(p);
+    const numPr = eff.numPr;
     if (!numPr) return null;
-    const ilvlEl = numPr.children.find((c) => c instanceof XmlElement && isW(c, "ilvl"));
-    const numIdEl = numPr.children.find((c) => c instanceof XmlElement && isW(c, "numId"));
-    const level = Number(ilvlEl?.attributes.get("w:val") ?? ilvlEl?.attributes.get("val") ?? 0);
-    const numId = String(numIdEl?.attributes.get("w:val") ?? numIdEl?.attributes.get("val") ?? "");
+    const level = Number(numPr.ilvl ?? 0);
+    const numId = String(numPr.numId ?? "");
     if (!numId) return null;
     const lvl = this.numbering?.getLevel(numId, level);
     const numFmt = lvl?.numFmt ?? "decimal";
@@ -432,10 +441,10 @@ class WmlConversionContext {
 
   getParagraphClass(p) {
     if (!this.settings.fabricateCssClasses) return null;
-    const pPr = (p.children ?? []).find((c) => c instanceof XmlElement && isW(c, "pPr"));
-    const pStyle = pPr?.children?.find((c) => c instanceof XmlElement && isW(c, "pStyle"));
-    const val = pStyle?.attributes?.get("w:val") ?? pStyle?.attributes?.get("val");
+    const eff = this.getEffectiveParagraphProperties(p);
+    const val = eff.pStyle;
     if (!val) return null;
+    this.ensureParagraphStyleCss(String(val));
     return `${this.settings.cssClassPrefix}p-${slug(String(val))}`;
   }
 
@@ -445,7 +454,103 @@ class WmlConversionContext {
     const rStyle = rPr?.children?.find((c) => c instanceof XmlElement && isW(c, "rStyle"));
     const val = rStyle?.attributes?.get("w:val") ?? rStyle?.attributes?.get("val");
     if (!val) return null;
+    this.ensureRunStyleCss(String(val));
     return `${this.settings.cssClassPrefix}r-${slug(String(val))}`;
+  }
+
+  getParagraphStyleAttr(p) {
+    const eff = this.getEffectiveParagraphProperties(p);
+    const rules = [];
+    if (eff.jc) {
+      const ta = mapJustificationToCssTextAlign(eff.jc);
+      if (ta) rules.push(`text-align:${ta}`);
+    }
+    if (eff.before != null) rules.push(`margin-top:${twipsToPt(eff.before)}pt`);
+    if (eff.after != null) rules.push(`margin-bottom:${twipsToPt(eff.after)}pt`);
+    if (eff.left != null) rules.push(`margin-left:${twipsToPt(eff.left)}pt`);
+    if (eff.right != null) rules.push(`margin-right:${twipsToPt(eff.right)}pt`);
+    if (eff.firstLine != null) rules.push(`text-indent:${twipsToPt(eff.firstLine)}pt`);
+    if (eff.hanging != null) rules.push(`text-indent:-${twipsToPt(eff.hanging)}pt`);
+    return rules.length ? rules.join(";") : "";
+  }
+
+  getEffectiveParagraphProperties(p) {
+    const pPr = (p.children ?? []).find((c) => c instanceof XmlElement && isW(c, "pPr")) ?? null;
+    const direct = pPr ? parseParagraphProperties(pPr) : {};
+    const styleId = direct.pStyle ?? null;
+    const style = styleId ? this.styles.resolveParagraphStyle(styleId) : null;
+    const merged = { ...(style?.para ?? {}), ...direct };
+    if (styleId) merged.pStyle = styleId;
+    return merged;
+  }
+
+  getEffectiveRunFormatting(paragraph, r) {
+    const rPr = (r.children ?? []).find((c) => c instanceof XmlElement && isW(c, "rPr")) ?? null;
+    const direct = rPr ? parseRunProperties(rPr) : {};
+    const runStyle = direct.rStyle ? this.styles.resolveCharacterStyle(direct.rStyle) : null;
+
+    // paragraph style rPr applies to runs as a base
+    let paragraphRun = {};
+    if (paragraph) {
+      const pEff = this.getEffectiveParagraphProperties(paragraph);
+      if (pEff.pStyle) {
+        const pStyle = this.styles.resolveParagraphStyle(pEff.pStyle);
+        paragraphRun = pStyle?.run ?? {};
+      }
+    }
+
+    return { ...paragraphRun, ...(runStyle?.run ?? {}), ...direct };
+  }
+
+  getRunStyleAttr(eff) {
+    const rules = [];
+    if (eff.color) rules.push(`color:${eff.color}`);
+    if (eff.sz != null) rules.push(`font-size:${halfPointsToPt(eff.sz)}pt`);
+    if (eff.fontFamily) rules.push(`font-family:${cssString(eff.fontFamily)}`);
+    if (eff.highlight) {
+      const bg = mapHighlightToCss(eff.highlight);
+      if (bg) rules.push(`background-color:${bg}`);
+    }
+    return rules.length ? rules.join(";") : "";
+  }
+
+  ensureParagraphStyleCss(styleId) {
+    const className = `${this.settings.cssClassPrefix}p-${slug(styleId)}`;
+    if (this.generatedCssText.includes(`.${className}`)) return;
+    const style = this.styles.resolveParagraphStyle(styleId);
+    if (!style) return;
+    const rules = [];
+    if (style.para.jc) {
+      const ta = mapJustificationToCssTextAlign(style.para.jc);
+      if (ta) rules.push(`text-align:${ta}`);
+    }
+    if (style.para.before != null) rules.push(`margin-top:${twipsToPt(style.para.before)}pt`);
+    if (style.para.after != null) rules.push(`margin-bottom:${twipsToPt(style.para.after)}pt`);
+    if (style.para.left != null) rules.push(`margin-left:${twipsToPt(style.para.left)}pt`);
+    if (style.para.right != null) rules.push(`margin-right:${twipsToPt(style.para.right)}pt`);
+    if (style.para.firstLine != null) rules.push(`text-indent:${twipsToPt(style.para.firstLine)}pt`);
+    if (style.para.hanging != null) rules.push(`text-indent:-${twipsToPt(style.para.hanging)}pt`);
+    if (rules.length) this.generatedCssText += `\n.${className}{${rules.join(";")}}`;
+  }
+
+  ensureRunStyleCss(styleId) {
+    const className = `${this.settings.cssClassPrefix}r-${slug(styleId)}`;
+    if (this.generatedCssText.includes(`.${className}`)) return;
+    const style = this.styles.resolveCharacterStyle(styleId);
+    if (!style) return;
+    const eff = style.run ?? {};
+    const rules = [];
+    if (eff.color) rules.push(`color:${eff.color}`);
+    if (eff.sz != null) rules.push(`font-size:${halfPointsToPt(eff.sz)}pt`);
+    if (eff.fontFamily) rules.push(`font-family:${cssString(eff.fontFamily)}`);
+    if (eff.highlight) {
+      const bg = mapHighlightToCss(eff.highlight);
+      if (bg) rules.push(`background-color:${bg}`);
+    }
+    if (eff.bold) rules.push("font-weight:700");
+    if (eff.italic) rules.push("font-style:italic");
+    if (eff.underline) rules.push("text-decoration:underline");
+    if (rules.length) this.generatedCssText += `\n.${className}{${rules.join(";")}}`;
   }
 
   getHyperlinkTarget(rid) {
@@ -679,4 +784,41 @@ function isW(el, localName) {
   if (localName && local !== localName) return false;
   if (prefix === "w") return true;
   return el.lookupNamespaceUri(prefix) === W_NS;
+}
+
+function twipsToPt(twips) {
+  return Number(twips) / 20;
+}
+
+function halfPointsToPt(halfPoints) {
+  return Number(halfPoints) / 2;
+}
+
+function mapJustificationToCssTextAlign(jc) {
+  const v = String(jc);
+  if (v === "left") return "left";
+  if (v === "right") return "right";
+  if (v === "center") return "center";
+  if (v === "both" || v === "distribute") return "justify";
+  return null;
+}
+
+function mapHighlightToCss(val) {
+  const v = String(val);
+  // Minimal mapping; Word highlight values include many named colors.
+  if (v === "yellow") return "yellow";
+  if (v === "green") return "lime";
+  if (v === "cyan") return "cyan";
+  if (v === "magenta") return "magenta";
+  if (v === "blue") return "blue";
+  if (v === "red") return "red";
+  if (v === "black") return "black";
+  if (v === "white") return "white";
+  if (v === "none") return null;
+  return null;
+}
+
+function cssString(s) {
+  const v = String(s).replaceAll('"', '\\"');
+  return `"${v}"`;
 }
