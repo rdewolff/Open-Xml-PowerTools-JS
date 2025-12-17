@@ -705,6 +705,13 @@ class WmlConversionContext {
       if (ta) rules.push(`text-align:${ta}`);
     }
     if (eff.bidi) rules.push("direction:rtl");
+    if (eff.shdFill) rules.push(`background-color:${eff.shdFill}`);
+    if (eff.pBdr) {
+      if (eff.pBdr.top) rules.push(`border-top:${eff.pBdr.top}`);
+      if (eff.pBdr.right) rules.push(`border-right:${eff.pBdr.right}`);
+      if (eff.pBdr.bottom) rules.push(`border-bottom:${eff.pBdr.bottom}`);
+      if (eff.pBdr.left) rules.push(`border-left:${eff.pBdr.left}`);
+    }
     if (eff.before != null) rules.push(`margin-top:${twipsToPt(eff.before)}pt`);
     if (eff.after != null) rules.push(`margin-bottom:${twipsToPt(eff.after)}pt`);
     if (eff.left != null) rules.push(`margin-left:${twipsToPt(eff.left)}pt`);
@@ -775,6 +782,13 @@ class WmlConversionContext {
       if (ta) rules.push(`text-align:${ta}`);
     }
     if (style.para.bidi) rules.push("direction:rtl");
+    if (style.para.shdFill) rules.push(`background-color:${style.para.shdFill}`);
+    if (style.para.pBdr) {
+      if (style.para.pBdr.top) rules.push(`border-top:${style.para.pBdr.top}`);
+      if (style.para.pBdr.right) rules.push(`border-right:${style.para.pBdr.right}`);
+      if (style.para.pBdr.bottom) rules.push(`border-bottom:${style.para.pBdr.bottom}`);
+      if (style.para.pBdr.left) rules.push(`border-left:${style.para.pBdr.left}`);
+    }
     if (style.para.before != null) rules.push(`margin-top:${twipsToPt(style.para.before)}pt`);
     if (style.para.after != null) rules.push(`margin-bottom:${twipsToPt(style.para.after)}pt`);
     if (style.para.left != null) rules.push(`margin-left:${twipsToPt(style.para.left)}pt`);

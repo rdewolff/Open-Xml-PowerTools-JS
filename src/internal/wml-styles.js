@@ -108,6 +108,28 @@ export function parseParagraphProperties(pPr) {
   const bidi = firstChildW(pPr, "bidi");
   if (bidi) out.bidi = true;
 
+  const shd = firstChildW(pPr, "shd");
+  if (shd) {
+    const fill = shd.attributes.get("w:fill") ?? shd.attributes.get("fill") ?? null;
+    if (fill && String(fill) !== "auto") out.shdFill = `#${String(fill)}`;
+  }
+
+  const pBdr = firstChildW(pPr, "pBdr");
+  if (pBdr) {
+    const border = {};
+    for (const side of ["top", "left", "bottom", "right"]) {
+      const el = firstChildW(pBdr, side);
+      if (!el) continue;
+      const val = el.attributes.get("w:val") ?? el.attributes.get("val") ?? "single";
+      if (String(val) === "nil" || String(val) === "none") continue;
+      const sz = toInt(el.attributes.get("w:sz") ?? el.attributes.get("sz")) ?? 4;
+      const color = el.attributes.get("w:color") ?? el.attributes.get("color") ?? "000000";
+      const widthPt = sz / 8;
+      border[side] = `${widthPt}pt ${borderValToCss(String(val))} #${String(color)}`;
+    }
+    if (Object.keys(border).length) out.pBdr = border;
+  }
+
   const spacing = firstChildW(pPr, "spacing");
   if (spacing) {
     out.before = toInt(spacing.attributes.get("w:before") ?? spacing.attributes.get("before"));
@@ -204,4 +226,12 @@ function toInt(v) {
   if (v == null) return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+function borderValToCss(val) {
+  const v = String(val);
+  if (v === "dashed") return "dashed";
+  if (v === "dotted") return "dotted";
+  if (v === "double") return "double";
+  return "solid";
 }
