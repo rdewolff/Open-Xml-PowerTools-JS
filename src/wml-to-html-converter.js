@@ -18,12 +18,13 @@ export const WmlToHtmlConverter = {
     const ctx = await WmlConversionContext.create(doc, xmlDoc, warnings, s);
     const body = ctx.findBody();
     const htmlParts = await renderBodyChildren(ctx, body);
+    const notesParts = ctx.renderNotesSections();
 
     const cssText = [ctx.generatedCssText, s.generalCss, s.additionalCss].filter(Boolean).join("\n");
     const htmlElement = buildHtmlElement({
       title: s.pageTitle,
       cssText,
-      bodyHtml: htmlParts.join("\n"),
+      bodyHtml: [...htmlParts, ...notesParts].filter(Boolean).join("\n"),
     });
     const html = `<!doctype html>\n${serializeXml(htmlElement)}`;
 
@@ -155,6 +156,14 @@ async function renderRun(ctx, paragraph, r) {
     if (isW(child, "t")) pieces.push(escapeHtml(child.textContent()));
     else if (isW(child, "tab")) pieces.push("    ");
     else if (isW(child, "br")) pieces.push("<br/>");
+    else if (isW(child, "footnoteReference")) {
+      const id = child.attributes.get("w:id") ?? child.attributes.get("id");
+      pieces.push(ctx.renderFootnoteRef(id));
+    }
+    else if (isW(child, "endnoteReference")) {
+      const id = child.attributes.get("w:id") ?? child.attributes.get("id");
+      pieces.push(ctx.renderEndnoteRef(id));
+    }
     else if (isW(child, "drawing") || isW(child, "pict")) pieces.push(await renderImageFromContainer(ctx, child));
     else if (isW(child, "delText")) {
       // should be removed by RevisionAccepter; ignore for now
@@ -398,16 +407,23 @@ class WmlConversionContext {
     this.contentTypes = contentTypes;
     this.styles = styles;
     this.generatedCssText = "";
+    this.footnotes = null;
+    this.endnotes = null;
   }
 
   static async create(doc, mainXml, warnings, settings) {
-    const [rels, numbering, contentTypes, styles] = await Promise.all([
+    const [rels, numbering, contentTypes, styles, footnotes, endnotes] = await Promise.all([
       readRelationships(doc, "/word/_rels/document.xml.rels"),
       readNumbering(doc),
       readContentTypes(doc),
       readWmlStyles(doc),
+      readNotes(doc, "/word/footnotes.xml"),
+      readNotes(doc, "/word/endnotes.xml"),
     ]);
-    return new WmlConversionContext({ doc, mainXml, warnings, settings, rels, numbering, contentTypes, styles });
+    const ctx = new WmlConversionContext({ doc, mainXml, warnings, settings, rels, numbering, contentTypes, styles });
+    ctx.footnotes = footnotes;
+    ctx.endnotes = endnotes;
+    return ctx;
   }
 
   findBody() {
@@ -595,6 +611,43 @@ class WmlConversionContext {
     return `<img src="${src}"${renderAlt(info.altText)}/>`;
   }
 
+  renderFootnoteRef(id) {
+    const noteId = id == null ? "" : String(id);
+    if (!noteId) return "";
+    if (!this.footnotes?.byId.has(noteId)) return `<sup>[${escapeHtml(noteId)}]</sup>`;
+    return `<sup><a href="#${escapeHtml(this.settings.cssClassPrefix)}footnote-${escapeHtml(noteId)}">${escapeHtml(noteId)}</a></sup>`;
+  }
+
+  renderEndnoteRef(id) {
+    const noteId = id == null ? "" : String(id);
+    if (!noteId) return "";
+    if (!this.endnotes?.byId.has(noteId)) return `<sup>[${escapeHtml(noteId)}]</sup>`;
+    return `<sup><a href="#${escapeHtml(this.settings.cssClassPrefix)}endnote-${escapeHtml(noteId)}">${escapeHtml(noteId)}</a></sup>`;
+  }
+
+  renderNotesSections() {
+    const out = [];
+    const footnotesHtml = this.renderNotesSection("footnote", this.footnotes);
+    if (footnotesHtml) out.push(footnotesHtml);
+    const endnotesHtml = this.renderNotesSection("endnote", this.endnotes);
+    if (endnotesHtml) out.push(endnotesHtml);
+    return out;
+  }
+
+  renderNotesSection(kind, notes) {
+    if (!notes?.orderedIds?.length) return "";
+    const items = [];
+    for (const id of notes.orderedIds) {
+      const text = notes.byId.get(id) ?? "";
+      items.push(
+        `<li id="${escapeHtml(this.settings.cssClassPrefix)}${kind}-${escapeHtml(id)}">${escapeHtml(text)}</li>`,
+      );
+    }
+    if (!items.length) return "";
+    this.generatedCssText += `\n.${this.settings.cssClassPrefix}${kind}s{margin-top:1em;font-size:0.95em}`;
+    return `<hr/><ol class="${escapeHtml(this.settings.cssClassPrefix)}${kind}s">${items.join("")}</ol>`;
+  }
+
   renderListMarker(listInfo, index1Based) {
     const impl = this.getListItemTextImplementation();
     if (!impl) return null;
@@ -621,6 +674,34 @@ class WmlConversionContext {
     this.generatedCssText += [
       `.${this.settings.cssClassPrefix}li-marker { display: inline-block; min-width: 2.2em; }`,
     ].join("\n");
+  }
+}
+
+async function readNotes(doc, partUri) {
+  try {
+    const xml = parseXml(await doc.getPartText(partUri));
+    const byId = new Map();
+    const orderedIds = [];
+
+    for (const el of xml.root.descendants()) {
+      if (!(el instanceof XmlElement)) continue;
+      const local = el.nameParts().local;
+      if (local !== "footnote" && local !== "endnote") continue;
+      const id = el.attributes.get("w:id") ?? el.attributes.get("id");
+      if (id == null) continue;
+      const type = el.attributes.get("w:type") ?? el.attributes.get("type");
+      if (type) continue; // separators/continuations/etc
+      const idStr = String(id);
+      const text = [...el.descendantsByNameNS(W_NS, "t")].map((t) => t.textContent()).join("");
+      byId.set(idStr, text);
+      orderedIds.push(idStr);
+    }
+
+    // Sort numeric where possible for stable output.
+    orderedIds.sort((a, b) => Number(a) - Number(b));
+    return { byId, orderedIds };
+  } catch {
+    return null;
   }
 }
 
