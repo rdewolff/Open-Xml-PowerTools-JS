@@ -2,6 +2,8 @@
 
 JavaScript (ESM) port of the **DOCX-focused** parts of Open XML PowerTools, built to run with **zero npm dependencies** in both **browsers** and **Node.js**.
 
+This project is **not affiliated with, endorsed by, or sponsored by** Microsoft or the original Open-Xml-PowerTools authors.
+
 This repo currently focuses on:
 - **DOCX → HTML** conversion (structure-first, expanding fidelity over time)
 - A small set of **DOCX transforms** used by the converter (revisions, markup simplification, text replace)
@@ -188,11 +190,23 @@ Implementation layout:
 
 ## Attribution
 
-This project is a JavaScript port inspired by and modeled after **Open XML PowerTools** (C#), including familiar type and module naming (e.g., `WmlDocument`, `WmlToHtmlConverter`, `MarkupSimplifier`).
+This project is a JavaScript **port/derivative** of **Open-Xml-PowerTools** (C#), including familiar type and module naming (e.g., `WmlDocument`, `WmlToHtmlConverter`, `MarkupSimplifier`).
 
-- Original project: `Open-Xml-PowerTools` by Microsoft and contributors (notably Eric White)
-- License: MIT (see the upstream repository for full license details)
-  - Upstream repo: https://github.com/OpenXmlDev/Open-Xml-PowerTools
+- Upstream project: https://github.com/OpenXmlDev/Open-Xml-PowerTools
+- This repo contains a **JavaScript translation** with additional modifications and re-architecture (ZIP/OPC + XML implemented in JS for browser compatibility).
+- Required upstream notices and the full upstream MIT license text are included in `NOTICE.md`.
 
 This repo does **not** use the Open XML SDK; instead it re-implements the needed ZIP/OPC and XML manipulation in JavaScript to remain dependency-free and browser-compatible.
 
+### Trademarks / endorsement
+
+“Microsoft” and related marks are trademarks of their respective owners. Use of names is for identification only and does not imply endorsement.
+
+### Dependencies & sample assets
+
+This repository does not intentionally ship upstream sample DOCX documents or other external assets. The test fixtures in `test/fixtures/` are minimal generated files intended to be MIT-compatible.
+
+## License
+
+- This repository is licensed under MIT: see `LICENSE`.
+- Portions derived from Open-Xml-PowerTools remain under the upstream MIT license and required notices: see `NOTICE.md`.
