@@ -221,7 +221,7 @@ export class ZipEntry {
       if (!this._adapter?.inflateRaw) {
         throw new OpenXmlPowerToolsError("OXPT_ZIP_UNSUPPORTED", "Inflate adapter not provided");
       }
-      return await this._adapter.inflateRaw(compressed);
+      return await this._adapter.inflateRaw(compressed, { expectedSize: this.uncompressedSize });
     }
     throw new OpenXmlPowerToolsError(
       "OXPT_ZIP_UNSUPPORTED",

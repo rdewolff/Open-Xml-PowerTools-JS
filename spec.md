@@ -17,7 +17,9 @@
 
 - **No external dependencies.** “No deps” means no npm packages; using **runtime built-ins** is allowed.
 - DOCX is a ZIP/OPC package; deflate/inflate is required.
-  - Browser: use `CompressionStream` / `DecompressionStream` when available.
+  - Browser:
+    - Reading: includes a **pure-JS raw DEFLATE inflater** (because `DecompressionStream("deflate")` is typically zlib-wrapped and doesn’t decode raw ZIP deflate).
+    - Writing: use `CompressionStream` when available, otherwise users supply a `ZipAdapter` (or accept larger “store” ZIP output as a future option).
   - Node: use `node:zlib` when available.
   - Other runtimes: user supplies a small adapter (see `ZipAdapter`).
 

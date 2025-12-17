@@ -20,15 +20,9 @@ export async function getDefaultZipAdapter() {
     }
   }
 
-  // Web: use built-in CompressionStream / DecompressionStream if present.
-  if (typeof CompressionStream !== "undefined" && typeof DecompressionStream !== "undefined") {
-    return ZipAdapterWeb;
-  }
-
-  throw new OpenXmlPowerToolsError(
-    "OXPT_ZIP_UNSUPPORTED",
-    "No built-in ZIP adapter available in this runtime; pass an adapter with inflateRaw/deflateRaw",
-  );
+  // Web (and other non-Node runtimes): use our web adapter, which can
+  // fall back to a pure-JS inflater when DecompressionStream can't decode raw ZIP deflate.
+  return ZipAdapterWeb;
 }
 
 function isNodeLike() {

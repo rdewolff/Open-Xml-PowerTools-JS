@@ -183,8 +183,10 @@ Current HTML→DOCX coverage (high-level):
 DOCX is a ZIP/OPC package and requires deflate/inflate:
 
 - **Node.js**: uses `node:zlib` automatically (lazy import)
-- **Browsers**: uses built-in `CompressionStream` / `DecompressionStream` when available
-- Other runtimes: pass a `zipAdapter` when constructing documents:
+- **Browsers**:
+  - **Reading DOCX**: uses a built-in **pure-JS raw DEFLATE inflater** (and will use `DecompressionStream("deflate-raw")` if a browser supports it).
+  - **Writing DOCX** (repacking after transforms): uses `CompressionStream` when available; otherwise provide a `zipAdapter` with `deflateRaw`.
+- Other runtimes: pass a `zipAdapter` when constructing documents / saving modified documents:
 
 ```js
 const doc = WmlDocument.fromBytes(bytes, {

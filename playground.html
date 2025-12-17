@@ -254,10 +254,31 @@
       let currentDoc = null;
       let lastHtml = "";
 
-      runtimeInfo.textContent =
-        typeof CompressionStream === "undefined"
-          ? "No CompressionStream: provide a zipAdapter when needed"
-          : "CompressionStream available";
+      function supportsStream(ctor, format) {
+        try {
+          // eslint-disable-next-line no-new
+          new ctor(format);
+          return true;
+        } catch {
+          return false;
+        }
+      }
+
+      const canDecompressRaw =
+        typeof DecompressionStream !== "undefined" && supportsStream(DecompressionStream, "deflate-raw");
+      const canCompressRaw =
+        typeof CompressionStream !== "undefined" && supportsStream(CompressionStream, "deflate-raw");
+      const canCompressZlib =
+        typeof CompressionStream !== "undefined" && supportsStream(CompressionStream, "deflate");
+
+      const readImpl = canDecompressRaw ? "DecompressionStream('deflate-raw')" : "JS inflater";
+      const writeImpl = canCompressRaw
+        ? "CompressionStream('deflate-raw')"
+        : canCompressZlib
+          ? "CompressionStream('deflate') (zlib-stripped)"
+          : "no built-in compressor";
+
+      runtimeInfo.textContent = `ZIP read: ${readImpl} · ZIP write: ${writeImpl}`;
 
       function setStatus(text) {
         status.textContent = text;
@@ -370,4 +391,3 @@
     </script>
   </body>
 </html>
-
