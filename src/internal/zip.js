@@ -92,7 +92,7 @@ export class ZipArchive {
         if (!adapter?.deflateRaw) {
           throw new OpenXmlPowerToolsError("OXPT_ZIP_UNSUPPORTED", "Deflate adapter not provided");
         }
-        compressed = adapter.deflateRaw(uncompressed, { level });
+        compressed = await adapter.deflateRaw(uncompressed, { level });
       } else if (method !== 0) {
         throw new OpenXmlPowerToolsError("OXPT_ZIP_UNSUPPORTED", `Unsupported compression method: ${method}`);
       }
@@ -221,7 +221,7 @@ export class ZipEntry {
       if (!this._adapter?.inflateRaw) {
         throw new OpenXmlPowerToolsError("OXPT_ZIP_UNSUPPORTED", "Inflate adapter not provided");
       }
-      return this._adapter.inflateRaw(compressed);
+      return await this._adapter.inflateRaw(compressed);
     }
     throw new OpenXmlPowerToolsError(
       "OXPT_ZIP_UNSUPPORTED",
@@ -240,4 +240,3 @@ function findEndOfCentralDirectory(bytes) {
   }
   throw new OpenXmlPowerToolsError("OXPT_ZIP_INVALID", "End of central directory not found");
 }
-

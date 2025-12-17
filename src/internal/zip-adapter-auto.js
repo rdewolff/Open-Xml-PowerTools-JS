@@ -1,4 +1,5 @@
 import { OpenXmlPowerToolsError } from "../open-xml-powertools-error.js";
+import { ZipAdapterWeb } from "./zip-adapter-web.js";
 
 export async function getDefaultZipAdapter() {
   // Node.js: prefer raw deflate/inflate via node:zlib, but avoid top-level imports
@@ -19,6 +20,11 @@ export async function getDefaultZipAdapter() {
     }
   }
 
+  // Web: use built-in CompressionStream / DecompressionStream if present.
+  if (typeof CompressionStream !== "undefined" && typeof DecompressionStream !== "undefined") {
+    return ZipAdapterWeb;
+  }
+
   throw new OpenXmlPowerToolsError(
     "OXPT_ZIP_UNSUPPORTED",
     "No built-in ZIP adapter available in this runtime; pass an adapter with inflateRaw/deflateRaw",
@@ -35,4 +41,3 @@ function isNodeLike() {
     typeof process.versions.node === "string"
   );
 }
-
