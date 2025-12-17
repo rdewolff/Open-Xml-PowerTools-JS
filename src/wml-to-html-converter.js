@@ -258,7 +258,11 @@ async function renderRun(ctx, paragraph, r) {
     if (!child?.qname) continue;
     if (isW(child, "t")) pieces.push(escapeHtml(child.textContent()));
     else if (isW(child, "tab")) pieces.push("\t");
-    else if (isW(child, "br")) pieces.push("<br/>");
+    else if (isW(child, "br")) {
+      const type = child.attributes.get("w:type") ?? child.attributes.get("type") ?? null;
+      if (type && String(type) === "page") pieces.push(ctx.renderPageBreak());
+      else pieces.push("<br/>");
+    }
     else if (isW(child, "cr")) pieces.push("<br/>");
     else if (isW(child, "noBreakHyphen")) pieces.push("‑");
     else if (isW(child, "softHyphen")) pieces.push("\u00ad");
@@ -920,6 +924,14 @@ class WmlConversionContext {
     if (!cid) return "";
     if (!this.comments?.byId.has(cid)) return `<sup>[c${escapeHtml(cid)}]</sup>`;
     return `<sup><a href="#${escapeHtml(this.settings.cssClassPrefix)}comment-${escapeHtml(cid)}">c${escapeHtml(cid)}</a></sup>`;
+  }
+
+  renderPageBreak() {
+    const cls = `${this.settings.cssClassPrefix}page-break`;
+    if (!this.generatedCssText.includes(`.${cls}`)) {
+      this.generatedCssText += `\n.${cls}{border:0;border-top:1px dashed #999;margin:2em 0;page-break-after:always;break-after:page}`;
+    }
+    return `<hr class="${escapeHtml(cls)}"/>`;
   }
 
   async renderCommentsSection() {
