@@ -396,20 +396,8 @@ async function renderTable(ctx, tbl) {
 }
 
 async function renderTableCellBlocks(ctx, tc) {
-  // Render only direct blocks (paragraphs/tables) to avoid duplicating nested content.
-  const out = [];
-  for (const child of tc.children ?? []) {
-    if (!(child instanceof XmlElement)) continue;
-    if (isW(child, "p")) {
-      out.push(`<p>${await renderParagraphContents(ctx, child)}</p>`);
-      continue;
-    }
-    if (isW(child, "tbl")) {
-      out.push(await renderTable(ctx, child));
-      continue;
-    }
-  }
-  return out;
+  // Use the same block logic as the body, so lists render correctly inside cells.
+  return renderBodyChildren(ctx, tc);
 }
 
 async function renderBlocksFromContainer(ctx, container) {
