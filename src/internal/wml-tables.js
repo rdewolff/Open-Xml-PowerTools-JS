@@ -70,6 +70,62 @@ export function tableBordersToCss(tblPr) {
   return css;
 }
 
+export function cellBordersToCss(tcPr) {
+  const bordersEl = tcPr ? firstChildW(tcPr, "tcBorders") : null;
+  if (!bordersEl) return null;
+  const sides = ["top", "left", "bottom", "right"];
+  const css = {};
+  for (const side of sides) {
+    const el = firstChildW(bordersEl, side);
+    if (!el) continue;
+    const val = el.attributes.get("w:val") ?? el.attributes.get("val") ?? "single";
+    if (String(val) === "nil" || String(val) === "none") continue;
+    const sz = toInt(el.attributes.get("w:sz") ?? el.attributes.get("sz")) ?? 4;
+    const color = el.attributes.get("w:color") ?? el.attributes.get("color") ?? "000000";
+    const widthPt = sz / 8;
+    css[side] = `${widthPt}pt solid #${color}`;
+  }
+  return css;
+}
+
+export function cellShadingToCss(tcPr) {
+  const shd = tcPr ? firstChildW(tcPr, "shd") : null;
+  if (!shd) return null;
+  const fill = shd.attributes.get("w:fill") ?? shd.attributes.get("fill") ?? null;
+  if (!fill || String(fill) === "auto") return null;
+  return `#${String(fill)}`;
+}
+
+export function cellVAlignToCss(tcPr) {
+  const vAlign = tcPr ? firstChildW(tcPr, "vAlign") : null;
+  if (!vAlign) return null;
+  const val = vAlign.attributes.get("w:val") ?? vAlign.attributes.get("val") ?? null;
+  if (!val) return null;
+  const v = String(val);
+  if (v === "top") return "top";
+  if (v === "center") return "middle";
+  if (v === "bottom") return "bottom";
+  return null;
+}
+
+export function cellPaddingToCss(tcPr) {
+  const tcMar = tcPr ? firstChildW(tcPr, "tcMar") : null;
+  if (!tcMar) return null;
+  const map = { top: "padding-top", left: "padding-left", bottom: "padding-bottom", right: "padding-right" };
+  const rules = [];
+  for (const [side, cssName] of Object.entries(map)) {
+    const el = firstChildW(tcMar, side);
+    if (!el) continue;
+    const w = el.attributes.get("w:w") ?? el.attributes.get("w") ?? null;
+    const type = el.attributes.get("w:type") ?? el.attributes.get("type") ?? "dxa";
+    if (!w) continue;
+    const n = Number(w);
+    if (!Number.isFinite(n)) continue;
+    if (String(type) === "dxa") rules.push(`${cssName}:${n / 20}pt`);
+  }
+  return rules.length ? rules.join(";") : null;
+}
+
 export function cellWidthToCss(tcPr) {
   const tcW = tcPr ? firstChildW(tcPr, "tcW") : null;
   if (!tcW) return null;

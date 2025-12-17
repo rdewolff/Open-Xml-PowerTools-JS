@@ -2,7 +2,15 @@ import { parseXml, XmlDocument, XmlElement, XmlText, serializeXml } from "./inte
 import { bytesToBase64 } from "./util/base64.js";
 import { readWmlStyles, parseParagraphProperties, parseRunProperties } from "./internal/wml-styles.js";
 import { readWmlPartXml, findBody as findWBody, getSectPrs, selectHeaderFooterRefs, pickRef } from "./internal/wml-sections.js";
-import { computeTableGrid, tableBordersToCss, cellWidthToCss } from "./internal/wml-tables.js";
+import {
+  computeTableGrid,
+  tableBordersToCss,
+  cellBordersToCss,
+  cellShadingToCss,
+  cellVAlignToCss,
+  cellPaddingToCss,
+  cellWidthToCss,
+} from "./internal/wml-tables.js";
 
 const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
@@ -236,6 +244,8 @@ async function renderTable(ctx, tbl) {
   if (borders?.right) style.push(`border-right:${borders.right}`);
   if (borders?.bottom) style.push(`border-bottom:${borders.bottom}`);
   if (borders?.left) style.push(`border-left:${borders.left}`);
+  const tableAlign = tblPr ? tableAlignToCss(tblPr) : null;
+  if (tableAlign) style.push(tableAlign);
 
   const grid = computeTableGrid(tbl);
   const rows = [];
@@ -253,14 +263,24 @@ async function renderTable(ctx, tbl) {
       if (borders?.insideH) cellStyles.push(`border-top:${borders.insideH}`);
       const w = cellWidthToCss(tcPr);
       if (w) cellStyles.push(`width:${w}`);
+      const cb = cellBordersToCss(tcPr);
+      if (cb?.top) cellStyles.push(`border-top:${cb.top}`);
+      if (cb?.right) cellStyles.push(`border-right:${cb.right}`);
+      if (cb?.bottom) cellStyles.push(`border-bottom:${cb.bottom}`);
+      if (cb?.left) cellStyles.push(`border-left:${cb.left}`);
+      const bg = cellShadingToCss(tcPr);
+      if (bg) cellStyles.push(`background-color:${bg}`);
+      const va = cellVAlignToCss(tcPr);
+      if (va) cellStyles.push(`vertical-align:${va}`);
+      const pad = cellPaddingToCss(tcPr);
+      if (pad) cellStyles.push(pad);
 
-      const paras = [];
-      for (const p of tc.descendantsByNameNS(W_NS, "p")) paras.push(`<p>${await renderParagraphContents(ctx, p)}</p>`);
+      const blocks = await renderTableCellBlocks(ctx, tc);
 
       const colspanAttr = cell.colspan > 1 ? ` colspan="${cell.colspan}"` : "";
       const rowspanAttr = cell.rowspan > 1 ? ` rowspan="${cell.rowspan}"` : "";
       const styleAttr = cellStyles.length ? ` style="${escapeHtml(cellStyles.join(";"))}"` : "";
-      renderedCells.push(`<${tag}${colspanAttr}${rowspanAttr}${styleAttr}>${paras.join("")}</${tag}>`);
+      renderedCells.push(`<${tag}${colspanAttr}${rowspanAttr}${styleAttr}>${blocks.join("")}</${tag}>`);
     }
 
     rows.push(`<tr>${renderedCells.join("")}</tr>`);
@@ -268,6 +288,33 @@ async function renderTable(ctx, tbl) {
 
   const tableStyle = style.length ? ` style="${escapeHtml(style.join(";"))}"` : "";
   return `<table${tableStyle}><tbody>${rows.join("")}</tbody></table>`;
+}
+
+async function renderTableCellBlocks(ctx, tc) {
+  // Render only direct blocks (paragraphs/tables) to avoid duplicating nested content.
+  const out = [];
+  for (const child of tc.children ?? []) {
+    if (!(child instanceof XmlElement)) continue;
+    if (isW(child, "p")) {
+      out.push(`<p>${await renderParagraphContents(ctx, child)}</p>`);
+      continue;
+    }
+    if (isW(child, "tbl")) {
+      out.push(await renderTable(ctx, child));
+      continue;
+    }
+  }
+  return out;
+}
+
+function tableAlignToCss(tblPr) {
+  const jc = (tblPr.children ?? []).find((c) => c instanceof XmlElement && isW(c, "jc")) ?? null;
+  const val = jc?.attributes.get("w:val") ?? jc?.attributes.get("val") ?? null;
+  if (!val) return null;
+  const v = String(val);
+  if (v === "center") return "margin-left:auto;margin-right:auto";
+  if (v === "right") return "margin-left:auto";
+  return null;
 }
 
 function ensureListStack(ctx, out, listStack, listInfo) {
