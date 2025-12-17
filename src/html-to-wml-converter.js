@@ -202,7 +202,10 @@ function htmlInlineToRuns(el, ctx, fmt) {
     if (tag === "img") {
       const src = child.attributes.get("src");
       const img = src ? ctx.addImageFromDataUrl(String(src)) : null;
-      if (img) runs.push(makeImageRun(img.relId));
+      if (img) {
+        const dims = parseHtmlImageDims(child);
+        runs.push(makeImageRun(img.relId, dims));
+      }
       continue;
     }
     if (tag === "strong" || tag === "b") {
@@ -280,18 +283,83 @@ function makeListParagraph(runs, numId, ilvl) {
 }
 
 function makeTable(tableEl, ctx) {
-  const rows = [];
+  const htmlRows = [];
   for (const tr of tableEl.children ?? []) {
     if (!(tr instanceof XmlElement) || tr.qname.toLowerCase() !== "tr") continue;
     const cells = [];
     for (const td of tr.children ?? []) {
-      if (!(td instanceof XmlElement) || (td.qname.toLowerCase() !== "td" && td.qname.toLowerCase() !== "th")) continue;
-      const cellBlocks = htmlToBlocks(td, ctx, 0);
-      const tcChildren = cellBlocks.length ? cellBlocks : [makeParagraph([makeRun("", { bold: false, italic: false, underline: false })])];
-      cells.push(makeElement("w:tc", new Map(), [...tcChildren]));
+      if (!(td instanceof XmlElement)) continue;
+      const tag = td.qname.toLowerCase();
+      if (tag !== "td" && tag !== "th") continue;
+      const colspan = parsePositiveInt(td.attributes.get("colspan")) ?? 1;
+      const rowspan = parsePositiveInt(td.attributes.get("rowspan")) ?? 1;
+      cells.push({ el: td, tag, colspan, rowspan });
     }
-    rows.push(makeElement("w:tr", new Map(), cells));
+    htmlRows.push({ el: tr, cells });
   }
+
+  // Build a rectangular Word table with explicit vMerge continuations.
+  const pendingByCol = new Map(); // col -> span
+  const rows = [];
+
+  for (const r of htmlRows) {
+    const trCells = [];
+    let col = 0;
+
+    const emitPendingAtCol = () => {
+      const span = pendingByCol.get(col);
+      if (!span) return false;
+      if (span.startCol !== col) {
+        col++;
+        return true;
+      }
+
+      trCells.push(makeMergedContinuationCell(span.colspan));
+      span.remaining--;
+      if (span.remaining <= 0) {
+        for (let k = 0; k < span.colspan; k++) pendingByCol.delete(span.startCol + k);
+      }
+      col += span.colspan;
+      return true;
+    };
+
+    while (emitPendingAtCol()) {}
+
+    for (const c of r.cells) {
+      while (emitPendingAtCol()) {}
+
+      const cellBlocks = htmlToBlocks(c.el, ctx, 0);
+      const tcChildren = cellBlocks.length ? cellBlocks : [makeParagraph([makeRun("", { bold: false, italic: false, underline: false })])];
+      const tcPrChildren = [];
+      if (c.colspan > 1) tcPrChildren.push(makeElement("w:gridSpan", new Map([["w:val", String(c.colspan)]]), []));
+      if (c.rowspan > 1) tcPrChildren.push(makeElement("w:vMerge", new Map([["w:val", "restart"]]), []));
+      const tcChildrenWithPr = tcPrChildren.length ? [makeElement("w:tcPr", new Map(), tcPrChildren), ...tcChildren] : tcChildren;
+      trCells.push(makeElement("w:tc", new Map(), tcChildrenWithPr));
+
+      if (c.rowspan > 1) {
+        const span = { startCol: col, colspan: c.colspan, remaining: c.rowspan - 1 };
+        for (let k = 0; k < c.colspan; k++) pendingByCol.set(col + k, span);
+      }
+
+      col += c.colspan;
+    }
+
+    // Emit any remaining pending spans after explicit HTML cells.
+    while (true) {
+      let nextStart = null;
+      for (const span of new Set(pendingByCol.values())) {
+        if (span.startCol < col) continue;
+        if (nextStart == null || span.startCol < nextStart) nextStart = span.startCol;
+      }
+      if (nextStart == null) break;
+      col = nextStart;
+      if (!emitPendingAtCol()) break;
+      while (emitPendingAtCol()) {}
+    }
+
+    rows.push(makeElement("w:tr", new Map(), trCells));
+  }
+
   return makeElement("w:tbl", new Map(), rows);
 }
 
@@ -320,10 +388,12 @@ function wrapHyperlinkRuns(rid, runs) {
   ];
 }
 
-function makeImageRun(rid) {
+function makeImageRun(rid, dims) {
   // Minimal inline DrawingML template.
-  const cx = "914400"; // 1 inch
-  const cy = "914400";
+  // Default size is 1 inch square; if width/height are provided, use those.
+  const emus = imageDimsToEmus(dims);
+  const cx = String(emus?.cx ?? 914400); // 1 inch
+  const cy = String(emus?.cy ?? 914400);
   const blip = makeElement("a:blip", new Map([["r:embed", rid]]), []);
   const blipFill = makeElement("pic:blipFill", new Map(), [blip]);
   const pic = makeElement("pic:pic", new Map(), [blipFill]);
@@ -333,6 +403,48 @@ function makeImageRun(rid) {
   const inline = makeElement("wp:inline", new Map(), [extent, graphic]);
   const drawing = makeElement("w:drawing", new Map(), [inline]);
   return makeElement("w:r", new Map(), [drawing]);
+}
+
+function makeMergedContinuationCell(colspan) {
+  const tcPrChildren = [makeElement("w:vMerge", new Map(), [])];
+  if (colspan > 1) tcPrChildren.unshift(makeElement("w:gridSpan", new Map([["w:val", String(colspan)]]), []));
+  const tcPr = makeElement("w:tcPr", new Map(), tcPrChildren);
+  const empty = makeParagraph([makeRun("", { bold: false, italic: false, underline: false })]);
+  return makeElement("w:tc", new Map(), [tcPr, empty]);
+}
+
+function parsePositiveInt(v) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  const n = Number.parseInt(s, 10);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
+function parseHtmlImageDims(imgEl) {
+  const w = parsePositiveInt(imgEl.attributes.get("width"));
+  const h = parsePositiveInt(imgEl.attributes.get("height"));
+  if (w == null && h == null) return null;
+  return { widthPx: w ?? null, heightPx: h ?? null };
+}
+
+function imageDimsToEmus(dims) {
+  if (!dims) return null;
+  const cx = dims.widthPx != null ? pxToEmus(dims.widthPx) : null;
+  const cy = dims.heightPx != null ? pxToEmus(dims.heightPx) : null;
+  if (cx == null && cy == null) return null;
+  // If only one dimension provided, keep 1:1 to match default (simple behavior).
+  const finalCx = cx ?? 914400;
+  const finalCy = cy ?? finalCx;
+  return { cx: finalCx, cy: finalCy };
+}
+
+function pxToEmus(px) {
+  const n = Number(px);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  // 1 inch == 914400 EMUs; assume 96 CSS px per inch.
+  return Math.round((n * 914400) / 96);
 }
 
 function makeElement(qname, attributes, children) {
