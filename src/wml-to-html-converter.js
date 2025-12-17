@@ -1138,12 +1138,26 @@ async function readNumbering(doc) {
         if (id != null) abstractById.set(String(id), el);
       } else if (local === "num") {
         const id = el.attributes.get("w:numId") ?? el.attributes.get("numId");
-        if (id != null) numById.set(String(id), el);
+        if (id != null) {
+          const overrides = new Map();
+          for (const c of el.children ?? []) {
+            if (!(c instanceof XmlElement) || !isW(c, "lvlOverride")) continue;
+            const ilvl = c.attributes.get("w:ilvl") ?? c.attributes.get("ilvl") ?? null;
+            if (ilvl == null) continue;
+            const startOverride = (c.children ?? []).find((x) => x instanceof XmlElement && isW(x, "startOverride")) ?? null;
+            const val = startOverride?.attributes.get("w:val") ?? startOverride?.attributes.get("val") ?? null;
+            if (val == null) continue;
+            const n = Number(val);
+            if (Number.isFinite(n) && n > 0) overrides.set(String(ilvl), n);
+          }
+          numById.set(String(id), { el, overrides });
+        }
       }
     }
 
     function getLevel(numId, ilvl) {
-      const numEl = numById.get(String(numId));
+      const numRec = numById.get(String(numId));
+      const numEl = numRec?.el ?? numRec;
       if (!numEl) return null;
       const absIdEl = numEl.children.find((c) => c instanceof XmlElement && isW(c, "abstractNumId"));
       const absId = absIdEl?.attributes.get("w:val") ?? absIdEl?.attributes.get("val");
@@ -1159,8 +1173,11 @@ async function readNumbering(doc) {
       const numFmt = String(numFmtEl?.attributes.get("w:val") ?? numFmtEl?.attributes.get("val") ?? "decimal");
       const lvlText = String(lvlTextEl?.attributes.get("w:val") ?? lvlTextEl?.attributes.get("val") ?? "");
       const startVal = startEl?.attributes.get("w:val") ?? startEl?.attributes.get("val") ?? null;
-      const start = startVal != null ? Number(startVal) : 1;
-      return { numFmt, lvlText, start: Number.isFinite(start) && start > 0 ? start : 1 };
+      let start = startVal != null ? Number(startVal) : 1;
+      if (!Number.isFinite(start) || start <= 0) start = 1;
+      const overrideStart = numRec?.overrides?.get(String(ilvl));
+      if (overrideStart != null) start = Number(overrideStart);
+      return { numFmt, lvlText, start };
     }
 
     return { getLevel };
