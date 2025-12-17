@@ -1,4 +1,5 @@
-import { parseXml, XmlDocument, XmlElement, XmlText } from "./internal/xml.js";
+import { parseXml, serializeXml, XmlDocument, XmlElement, XmlText } from "./internal/xml.js";
+import { OpcPackage } from "./internal/opc.js";
 
 const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
@@ -15,16 +16,49 @@ const REVISION_MARKERS_DROP = new Set([
 
 export const RevisionAccepter = {
   async acceptRevisions(doc) {
-    const mainXmlText = await doc.getPartText("/word/document.xml");
-    const mainXml = parseXml(mainXmlText);
-    const accepted = acceptInMainDocument(mainXml);
-    return doc.replacePartXml("/word/document.xml", accepted);
+    const pkg = await OpcPackage.fromBytes(doc.bytes, { adapter: doc.zipAdapter });
+    const partUris = listWordprocessingRevisionParts(pkg);
+    const replaceParts = {};
+
+    for (const partUri of partUris) {
+      let xmlText;
+      try {
+        xmlText = await doc.getPartText(partUri);
+      } catch {
+        continue;
+      }
+      let xml;
+      try {
+        xml = parseXml(xmlText);
+      } catch {
+        continue;
+      }
+
+      if (!isWordprocessingRoot(xml.root)) continue;
+      if (!hasTrackedRevisionsInNode(xml.root)) continue;
+
+      const accepted = acceptInMainDocument(xml);
+      const outText = serializeXml(accepted, { xmlDeclaration: true });
+      replaceParts[partUri] = new TextEncoder().encode(outText);
+    }
+
+    if (!Object.keys(replaceParts).length) return doc;
+    return doc.replaceParts(replaceParts);
   },
 
   async hasTrackedRevisions(doc) {
-    const mainXmlText = await doc.getPartText("/word/document.xml");
-    const mainXml = parseXml(mainXmlText);
-    return hasTrackedRevisionsInNode(mainXml.root);
+    const pkg = await OpcPackage.fromBytes(doc.bytes, { adapter: doc.zipAdapter });
+    const partUris = listWordprocessingRevisionParts(pkg);
+    for (const partUri of partUris) {
+      try {
+        const xmlText = await doc.getPartText(partUri);
+        const xml = parseXml(xmlText);
+        if (isWordprocessingRoot(xml.root) && hasTrackedRevisionsInNode(xml.root)) return true;
+      } catch {
+        // ignore
+      }
+    }
+    return false;
   },
 };
 
@@ -79,3 +113,34 @@ function isW(el) {
   return el.lookupNamespaceUri(prefix) === W_NS;
 }
 
+function isWordprocessingRoot(root) {
+  if (!(root instanceof XmlElement)) return false;
+  if (!isW(root)) return false;
+  const local = root.nameParts().local;
+  return (
+    local === "document" ||
+    local === "hdr" ||
+    local === "ftr" ||
+    local === "footnotes" ||
+    local === "endnotes" ||
+    local === "comments"
+  );
+}
+
+function listWordprocessingRevisionParts(pkg) {
+  const out = [];
+  for (const name of pkg.listPartNames()) {
+    const n = String(name);
+    if (!n.startsWith("word/")) continue;
+    if (!n.endsWith(".xml")) continue;
+    if (n === "word/document.xml") out.push("/word/document.xml");
+    else if (n === "word/footnotes.xml") out.push("/word/footnotes.xml");
+    else if (n === "word/endnotes.xml") out.push("/word/endnotes.xml");
+    else if (n === "word/comments.xml") out.push("/word/comments.xml");
+    else if (/^word\/header\d+\.xml$/.test(n)) out.push(`/${n}`);
+    else if (/^word\/footer\d+\.xml$/.test(n)) out.push(`/${n}`);
+  }
+  // Ensure deterministic order for stable outputs/tests.
+  out.sort();
+  return out;
+}
