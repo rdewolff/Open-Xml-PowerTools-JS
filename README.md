@@ -133,7 +133,7 @@ Current converter coverage (high-level):
 - tables (including `gridSpan`/`vMerge`, basic borders, shading/padding, and header rows)
 - images (data URLs by default, with basic size hints)
 - headers/footers (per-section)
-- footnotes/endnotes (references + appended section)
+- footnotes/endnotes (references + appended section, rendered as blocks)
 - comments (optional, when `includeComments: true`)
 
 ### Transforms (DOCX mutation)
