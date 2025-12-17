@@ -152,6 +152,9 @@ const simplified = await MarkupSimplifier.simplifyMarkup(noRevs, {
 const replaced = await TextReplacer.searchAndReplace(simplified, "Hello", "Hi", { matchCase: false });
 ```
 
+Notes:
+- `RevisionAccepter`, `MarkupSimplifier`, and `TextReplacer` operate on the main document and common WordprocessingML parts (headers/footers, footnotes/endnotes, comments) when present.
+
 ### HTML (XHTML) → DOCX
 
 This is intentionally minimal and currently expects well-formed XML (XHTML-like).

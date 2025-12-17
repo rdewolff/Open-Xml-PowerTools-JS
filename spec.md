@@ -224,6 +224,9 @@ const TextReplacer: {
 };
 ```
 
+Behavior:
+- Applies replacements across common WordprocessingML parts (main document, headers/footers, footnotes/endnotes, comments) when present.
+
 ## Errors
 
 ```ts
