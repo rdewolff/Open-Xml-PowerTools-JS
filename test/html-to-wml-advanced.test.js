@@ -91,3 +91,23 @@ test("HtmlToWmlConverter: supports thead/th headers and sup/sub/strike", async (
   assert.match(html.html, /<thead>/);
   assert.match(html.html, /<th>.*Head.*<\/th>/);
 });
+
+test("HtmlToWmlConverter: supports internal hyperlinks via bookmarks", async () => {
+  const xhtml = `<?xml version="1.0" encoding="UTF-8"?>
+<html>
+  <body>
+    <p><a id="BM1"></a>Target</p>
+    <p><a href="#BM1">Jump</a></p>
+  </body>
+</html>`;
+
+  const doc = await HtmlToWmlConverter.convertHtmlToWml("", "", "", xhtml, {});
+  const mainXml = await doc.getPartText("/word/document.xml");
+  assert.match(mainXml, /<w:bookmarkStart[^>]*w:name="BM1"/);
+  assert.match(mainXml, /<w:bookmarkEnd[^>]*\/>/);
+  assert.match(mainXml, /<w:hyperlink[^>]*w:anchor="BM1"/);
+
+  const html = await WmlToHtmlConverter.convertToHtml(doc);
+  assert.match(html.html, /<a id="BM1"\/?>/);
+  assert.match(html.html, /<a href="#BM1">/);
+});

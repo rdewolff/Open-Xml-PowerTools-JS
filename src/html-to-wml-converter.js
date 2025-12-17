@@ -40,6 +40,7 @@ export const HtmlToWmlConverter = {
 class HtmlToWmlContext {
   constructor() {
     this.nextRelId = 10;
+    this.nextBookmarkId = 1;
     this.relationships = [];
     this.hasNumbering = false;
     this.media = []; // { name, bytes, contentType }
@@ -75,6 +76,11 @@ class HtmlToWmlContext {
       Target: `media/${fileName}`,
     });
     return { relId: id, contentType };
+  }
+
+  addBookmark(name) {
+    const id = this.nextBookmarkId++;
+    return { id: String(id), name: String(name) };
   }
 }
 
@@ -194,9 +200,32 @@ function htmlInlineToRuns(el, ctx, fmt) {
     }
     if (tag === "a") {
       const href = child.attributes.get("href");
-      const rid = href ? ctx.addExternalHyperlink(String(href)) : null;
-      const inner = htmlInlineToRuns(child, ctx, fmt);
-      runs.push(...(rid ? wrapHyperlinkRuns(rid, inner) : inner));
+      const idAttr = child.attributes.get("id") ?? child.attributes.get("name") ?? null;
+
+      if (href && String(href).startsWith("#")) {
+        const anchor = String(href).slice(1);
+        const inner = htmlInlineToRuns(child, ctx, fmt);
+        runs.push(wrapAnchorHyperlinkRuns(anchor, inner));
+        continue;
+      }
+
+      if (href) {
+        const rid = ctx.addExternalHyperlink(String(href));
+        const inner = htmlInlineToRuns(child, ctx, fmt);
+        runs.push(...wrapHyperlinkRuns(rid, inner));
+        continue;
+      }
+
+      if (idAttr) {
+        const bm = ctx.addBookmark(String(idAttr));
+        runs.push(makeBookmarkStart(bm.id, bm.name));
+        const inner = htmlInlineToRuns(child, ctx, fmt);
+        runs.push(...inner);
+        runs.push(makeBookmarkEnd(bm.id));
+        continue;
+      }
+
+      runs.push(...htmlInlineToRuns(child, ctx, fmt));
       continue;
     }
     if (tag === "img") {
@@ -430,6 +459,18 @@ function wrapHyperlinkRuns(rid, runs) {
   return [
     makeElement("w:hyperlink", new Map([["r:id", rid]]), runs),
   ];
+}
+
+function wrapAnchorHyperlinkRuns(anchor, runs) {
+  return makeElement("w:hyperlink", new Map([["w:anchor", String(anchor)]]), runs);
+}
+
+function makeBookmarkStart(id, name) {
+  return makeElement("w:bookmarkStart", new Map([["w:id", String(id)], ["w:name", String(name)]]), []);
+}
+
+function makeBookmarkEnd(id) {
+  return makeElement("w:bookmarkEnd", new Map([["w:id", String(id)]]), []);
 }
 
 function makeImageRun(rid, dims) {
