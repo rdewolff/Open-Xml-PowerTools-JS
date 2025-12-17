@@ -63,3 +63,31 @@ test("HtmlToWmlConverter: maps table colspan/rowspan and image width/height", as
   assert.match(html.html, /colspan="2"/);
   assert.match(html.html, /rowspan="2"/);
 });
+
+test("HtmlToWmlConverter: supports thead/th headers and sup/sub/strike", async () => {
+  const xhtml = `<?xml version="1.0" encoding="UTF-8"?>
+<html>
+  <body>
+    <p>H<sup>2</sup>O <sub>x</sub> <s>gone</s></p>
+    <table>
+      <thead>
+        <tr><th>Head</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Body</td></tr>
+      </tbody>
+    </table>
+  </body>
+</html>`;
+
+  const doc = await HtmlToWmlConverter.convertHtmlToWml("", "", "", xhtml, {});
+  const mainXml = await doc.getPartText("/word/document.xml");
+  assert.match(mainXml, /<w:tblHeader\s*\/>/);
+  assert.match(mainXml, /<w:vertAlign[^>]*w:val="superscript"/);
+  assert.match(mainXml, /<w:vertAlign[^>]*w:val="subscript"/);
+  assert.match(mainXml, /<w:strike\s*\/>/);
+
+  const html = await WmlToHtmlConverter.convertToHtml(doc);
+  assert.match(html.html, /<thead>/);
+  assert.match(html.html, /<th>.*Head.*<\/th>/);
+});

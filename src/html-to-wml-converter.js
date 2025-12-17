@@ -220,6 +220,18 @@ function htmlInlineToRuns(el, ctx, fmt) {
       runs.push(...htmlInlineToRuns(child, ctx, { ...fmt, underline: true }));
       continue;
     }
+    if (tag === "s" || tag === "strike" || tag === "del") {
+      runs.push(...htmlInlineToRuns(child, ctx, { ...fmt, strike: true }));
+      continue;
+    }
+    if (tag === "sup") {
+      runs.push(...htmlInlineToRuns(child, ctx, { ...fmt, vertAlign: "superscript" }));
+      continue;
+    }
+    if (tag === "sub") {
+      runs.push(...htmlInlineToRuns(child, ctx, { ...fmt, vertAlign: "subscript" }));
+      continue;
+    }
     // Unknown inline element: recurse without changing formatting.
     runs.push(...htmlInlineToRuns(child, ctx, fmt));
   }
@@ -283,19 +295,29 @@ function makeListParagraph(runs, numId, ilvl) {
 }
 
 function makeTable(tableEl, ctx) {
+  const thead = (tableEl.children ?? []).find((c) => c instanceof XmlElement && c.qname.toLowerCase() === "thead") ?? null;
+  const tbody = (tableEl.children ?? []).find((c) => c instanceof XmlElement && c.qname.toLowerCase() === "tbody") ?? null;
+
+  const rowContainers = [];
+  if (thead) rowContainers.push({ el: thead, isHeader: true });
+  if (tbody) rowContainers.push({ el: tbody, isHeader: false });
+  if (!rowContainers.length) rowContainers.push({ el: tableEl, isHeader: false });
+
   const htmlRows = [];
-  for (const tr of tableEl.children ?? []) {
-    if (!(tr instanceof XmlElement) || tr.qname.toLowerCase() !== "tr") continue;
-    const cells = [];
-    for (const td of tr.children ?? []) {
-      if (!(td instanceof XmlElement)) continue;
-      const tag = td.qname.toLowerCase();
-      if (tag !== "td" && tag !== "th") continue;
-      const colspan = parsePositiveInt(td.attributes.get("colspan")) ?? 1;
-      const rowspan = parsePositiveInt(td.attributes.get("rowspan")) ?? 1;
-      cells.push({ el: td, tag, colspan, rowspan });
+  for (const rc of rowContainers) {
+    for (const tr of rc.el.children ?? []) {
+      if (!(tr instanceof XmlElement) || tr.qname.toLowerCase() !== "tr") continue;
+      const cells = [];
+      for (const td of tr.children ?? []) {
+        if (!(td instanceof XmlElement)) continue;
+        const tag = td.qname.toLowerCase();
+        if (tag !== "td" && tag !== "th") continue;
+        const colspan = parsePositiveInt(td.attributes.get("colspan")) ?? 1;
+        const rowspan = parsePositiveInt(td.attributes.get("rowspan")) ?? 1;
+        cells.push({ el: td, tag, colspan, rowspan });
+      }
+      htmlRows.push({ el: tr, cells, isHeaderRow: rc.isHeader });
     }
-    htmlRows.push({ el: tr, cells });
   }
 
   // Build a rectangular Word table with explicit vMerge continuations.
@@ -303,6 +325,8 @@ function makeTable(tableEl, ctx) {
   const rows = [];
 
   for (const r of htmlRows) {
+    const trPrChildren = [];
+    if (r.isHeaderRow) trPrChildren.push(makeElement("w:tblHeader", new Map(), []));
     const trCells = [];
     let col = 0;
 
@@ -329,6 +353,23 @@ function makeTable(tableEl, ctx) {
       while (emitPendingAtCol()) {}
 
       const cellBlocks = htmlToBlocks(c.el, ctx, 0);
+      // If the cell is simple inline content and came through as the implicit paragraph, ensure bold for <th>.
+      if (c.tag === "th") {
+        for (const b of cellBlocks) {
+          if (!(b instanceof XmlElement) || b.qname !== "w:p") continue;
+          for (const run of b.children ?? []) {
+            if (!(run instanceof XmlElement) || run.qname !== "w:r") continue;
+            const rPr = (run.children ?? []).find((x) => x instanceof XmlElement && x.qname === "w:rPr") ?? null;
+            if (rPr) {
+              if (!(rPr.children ?? []).some((x) => x instanceof XmlElement && x.qname === "w:b")) {
+                rPr.children.push(makeElement("w:b", new Map(), []));
+              }
+            } else {
+              run.children.unshift(makeElement("w:rPr", new Map(), [makeElement("w:b", new Map(), [])]));
+            }
+          }
+        }
+      }
       const tcChildren = cellBlocks.length ? cellBlocks : [makeParagraph([makeRun("", { bold: false, italic: false, underline: false })])];
       const tcPrChildren = [];
       if (c.colspan > 1) tcPrChildren.push(makeElement("w:gridSpan", new Map([["w:val", String(c.colspan)]]), []));
@@ -357,7 +398,8 @@ function makeTable(tableEl, ctx) {
       while (emitPendingAtCol()) {}
     }
 
-    rows.push(makeElement("w:tr", new Map(), trCells));
+    const trChildren = trPrChildren.length ? [makeElement("w:trPr", new Map(), trPrChildren), ...trCells] : trCells;
+    rows.push(makeElement("w:tr", new Map(), trChildren));
   }
 
   return makeElement("w:tbl", new Map(), rows);
@@ -368,6 +410,8 @@ function makeRun(text, fmt) {
   if (fmt.bold) rPrChildren.push(makeElement("w:b", new Map(), []));
   if (fmt.italic) rPrChildren.push(makeElement("w:i", new Map(), []));
   if (fmt.underline) rPrChildren.push(makeElement("w:u", new Map([["w:val", "single"]]), []));
+  if (fmt.strike) rPrChildren.push(makeElement("w:strike", new Map(), []));
+  if (fmt.vertAlign) rPrChildren.push(makeElement("w:vertAlign", new Map([["w:val", String(fmt.vertAlign)]]), []));
 
   const rChildren = [];
   if (rPrChildren.length) rChildren.push(makeElement("w:rPr", new Map(), rPrChildren));
