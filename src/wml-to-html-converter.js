@@ -12,8 +12,8 @@ export const WmlToHtmlConverter = {
     // Preprocess like C# converter (minimal subset): accept revisions and simplify markup.
     // Do this in-memory for `/word/document.xml` so we don't rewrite the DOCX unless user requests.
     let xmlDoc = parseXml(await doc.getPartText("/word/document.xml"));
-    xmlDoc = acceptRevisionsXml(xmlDoc);
-    xmlDoc = simplifyForHtmlXml(xmlDoc);
+    if (s.preprocess.acceptRevisions) xmlDoc = acceptRevisionsXml(xmlDoc);
+    if (s.preprocess.simplifyMarkup) xmlDoc = simplifyForHtmlXml(xmlDoc);
 
     const warnings = [];
 
@@ -53,6 +53,10 @@ function normalizeSettings(settings) {
     listItemImplementations: settings.listItemImplementations ?? null,
     imageHandler: settings.imageHandler ?? null,
     output: { format: settings.output?.format ?? "string" },
+    preprocess: {
+      acceptRevisions: settings.preprocess?.acceptRevisions ?? true,
+      simplifyMarkup: settings.preprocess?.simplifyMarkup ?? true,
+    },
   };
 }
 

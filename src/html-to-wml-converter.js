@@ -15,7 +15,11 @@ export const HtmlToWmlConverter = {
   // Minimal v0 implementation: accepts well-formed XHTML-as-XML (string or XmlElement).
   // Ignores CSS and most settings; supports <p>, <br/>, <strong>/<b>, <em>/<i>, <u>,
   // plus <h1>-<h6>, <ul>/<ol>/<li>, <table>/<tr>/<td>, <a href>, <img src="data:...">.
-  async convertHtmlToWml(defaultCss, authorCss, userCss, xhtml, settings = {}, templateDoc = null) {
+  async convertHtmlToWml(defaultCss, authorCss, userCss, xhtml, settings = {}, templateDoc = null, annotatedHtmlDumpFileName = null) {
+    void defaultCss;
+    void authorCss;
+    void userCss;
+    void annotatedHtmlDumpFileName;
     const xhtmlDoc = coerceXhtml(xhtml);
     const body = findHtmlBody(xhtmlDoc.root) ?? xhtmlDoc.root;
     const ctx = new HtmlToWmlContext();
