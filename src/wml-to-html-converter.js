@@ -204,6 +204,14 @@ async function renderParagraphContents(ctx, p) {
       inner.push(await renderRun(ctx, p, child));
       continue;
     }
+    if (isW(child, "bookmarkStart")) {
+      const name = child.attributes.get("w:name") ?? child.attributes.get("name");
+      if (name && String(name) !== "_GoBack") inner.push(`<a id="${escapeHtml(String(name))}"></a>`);
+      continue;
+    }
+    if (isW(child, "bookmarkEnd")) {
+      continue;
+    }
     if (isW(child, "hyperlink")) {
       inner.push(await renderHyperlink(ctx, child));
       continue;
