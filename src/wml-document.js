@@ -59,6 +59,11 @@ export class WmlDocument extends OpenXmlPowerToolsDocument {
     return RevisionAccepter.acceptRevisions(this);
   }
 
+  async convertToHtml(settings = {}) {
+    const { WmlToHtmlConverter } = await import("./wml-to-html-converter.js");
+    return WmlToHtmlConverter.convertToHtml(this, settings);
+  }
+
   async replacePartXml(partUri, xmlDocumentOrElement) {
     const xmlText = serializeXml(xmlDocumentOrElement, { xmlDeclaration: true });
     const bytes = new TextEncoder().encode(xmlText);

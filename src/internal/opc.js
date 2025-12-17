@@ -66,6 +66,24 @@ export class OpcPackage {
     }
   }
 
+  async isSpreadsheetDocument() {
+    try {
+      const office = await this.getOfficeDocumentPartUri();
+      return office === "/xl/workbook.xml";
+    } catch {
+      return false;
+    }
+  }
+
+  async isPresentationDocument() {
+    try {
+      const office = await this.getOfficeDocumentPartUri();
+      return office === "/ppt/presentation.xml";
+    } catch {
+      return false;
+    }
+  }
+
   async assertIsValidOpc() {
     if (!this.zip.getEntry(CONTENT_TYPES)) {
       throw new OpenXmlPowerToolsError("OXPT_INVALID_DOCX", "Missing [Content_Types].xml");
