@@ -1,5 +1,6 @@
-import { parseXml, XmlDocument, XmlElement, XmlText } from "./internal/xml.js";
+import { parseXml, serializeXml, XmlDocument, XmlElement, XmlText } from "./internal/xml.js";
 import { OpenXmlPowerToolsError } from "./open-xml-powertools-error.js";
+import { OpcPackage } from "./internal/opc.js";
 
 const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
@@ -23,19 +24,40 @@ export const MarkupSimplifier = {
       workingDoc = await RevisionAccepter.acceptRevisions(workingDoc);
     }
 
-    const mainXmlText = await workingDoc.getPartText("/word/document.xml");
-    const mainXml = parseXml(mainXmlText);
-    let simplified = simplifyMainDocument(mainXml, settings);
+    const pkg = await OpcPackage.fromBytes(workingDoc.bytes, { adapter: workingDoc.zipAdapter });
+    const partUris = listWordprocessingSimplifyParts(pkg);
+    const replaceParts = {};
+    const enc = new TextEncoder();
 
-    if (settings.removeGoBackBookmark) {
-      simplified = removeGoBackBookmarks(simplified);
+    for (const partUri of partUris) {
+      let xmlText;
+      try {
+        xmlText = await workingDoc.getPartText(partUri);
+      } catch {
+        continue;
+      }
+      let xml;
+      try {
+        xml = parseXml(xmlText);
+      } catch {
+        continue;
+      }
+
+      let simplified = simplifyXml(xml, settings);
+      if (partUri === "/word/document.xml" && settings.removeGoBackBookmark) {
+        simplified = removeGoBackBookmarks(simplified);
+      }
+
+      const outText = serializeXml(simplified, { xmlDeclaration: true });
+      replaceParts[partUri] = enc.encode(outText);
     }
 
-    return workingDoc.replacePartXml("/word/document.xml", simplified);
+    if (!Object.keys(replaceParts).length) return workingDoc;
+    return workingDoc.replaceParts(replaceParts);
   },
 };
 
-function simplifyMainDocument(xmlDoc, settings) {
+function simplifyXml(xmlDoc, settings) {
   const root = transformNode(xmlDoc.root, settings)[0];
   if (!(root instanceof XmlElement)) {
     throw new OpenXmlPowerToolsError("OXPT_XML_INVALID", "Simplification removed the document root");
@@ -191,4 +213,21 @@ function getAttrByLocalName(el, localName) {
 
 function inferQName(prefix, local) {
   return prefix ? `${prefix}:${local}` : local;
+}
+
+function listWordprocessingSimplifyParts(pkg) {
+  const out = [];
+  for (const name of pkg.listPartNames()) {
+    const n = String(name);
+    if (!n.startsWith("word/")) continue;
+    if (!n.endsWith(".xml")) continue;
+    if (n === "word/document.xml") out.push("/word/document.xml");
+    else if (n === "word/footnotes.xml") out.push("/word/footnotes.xml");
+    else if (n === "word/endnotes.xml") out.push("/word/endnotes.xml");
+    else if (n === "word/comments.xml") out.push("/word/comments.xml");
+    else if (/^word\/header\d+\.xml$/.test(n)) out.push(`/${n}`);
+    else if (/^word\/footer\d+\.xml$/.test(n)) out.push(`/${n}`);
+  }
+  out.sort();
+  return out;
 }

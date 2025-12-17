@@ -85,3 +85,62 @@ test("MarkupSimplifier: remove hyperlinks, field codes, and note references", as
   assert.doesNotMatch(xml, /<w:fldChar/);
   assert.doesNotMatch(xml, /footnoteReference/);
 });
+
+test("MarkupSimplifier: simplifies header/footer parts too", async () => {
+  const headerXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:p>
+    <w:hyperlink r:id="rIdLink">
+      <w:r><w:t>HeaderLink</w:t></w:r>
+    </w:hyperlink>
+  </w:p>
+</w:hdr>
+`;
+
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p><w:r><w:t>Body</w:t></w:r></w:p>
+    <w:sectPr>
+      <w:headerReference w:type="default" r:id="rId10"/>
+    </w:sectPr>
+  </w:body>
+</w:document>
+`;
+
+  const bytes = await buildDocx({
+    documentXml,
+    documentRelationships: [
+      {
+        Id: "rId10",
+        Type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header",
+        Target: "header1.xml",
+      },
+      {
+        Id: "rIdLink",
+        Type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+        Target: "https://example.com/",
+        TargetMode: "External",
+      },
+    ],
+    contentTypes: {
+      overrides: [
+        {
+          PartName: "/word/header1.xml",
+          ContentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml",
+        },
+      ],
+    },
+    extraEntries: [
+      { name: "word/header1.xml", text: headerXml },
+    ],
+  });
+
+  const doc = new WmlDocument(bytes);
+  const simplified = await MarkupSimplifier.simplifyMarkup(doc, { removeHyperlinks: true });
+  const newHeader = await simplified.getPartText("/word/header1.xml");
+  assert.doesNotMatch(newHeader, /<w:hyperlink/);
+  assert.match(newHeader, /HeaderLink/);
+});
