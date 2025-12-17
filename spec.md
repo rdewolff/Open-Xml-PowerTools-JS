@@ -333,6 +333,13 @@ Definition of done:
 Definition of done:
 - Can generate a simple DOCX from HTML with paragraphs, runs, lists, tables, and images.
 
+Implemented (current, minimal XHTML input):
+- paragraphs/headings, basic inline formatting (`b/i/u/s`, `sup/sub`)
+- hyperlinks (external + internal `#anchor`), bookmark targets via `<a id|name>`
+- lists (`ol/ul/li`, including `ol start`)
+- tables (incl. `thead/th` header rows, basic colspan/rowspan)
+- images (`<img src="data:...">`, optional `width/height`)
+
 ## Testing strategy
 
 - Primary runner: Node built-in `node:test` (`node --test`), keeping the library dependency-free.

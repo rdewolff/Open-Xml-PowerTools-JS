@@ -171,6 +171,13 @@ const xhtml = `<?xml version="1.0"?>
 const newDoc = await HtmlToWmlConverter.convertHtmlToWml("", "", "", xhtml, {});
 ```
 
+Current HTML→DOCX coverage (high-level):
+- headings/paragraphs, basic inline formatting (`b/i/u/s`, `sup/sub`)
+- hyperlinks (external and internal `#anchor`), bookmark targets via `<a id|name>`
+- lists (`ol/ul/li`, including `ol start`)
+- tables (including `thead/th` header rows and basic colspan/rowspan)
+- images (`<img src="data:...">`, optional `width/height`)
+
 ## Runtime ZIP support (no deps)
 
 DOCX is a ZIP/OPC package and requires deflate/inflate:
