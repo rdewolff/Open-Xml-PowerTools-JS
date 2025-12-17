@@ -9,7 +9,21 @@ export const MarkupSimplifier = {
       throw new OpenXmlPowerToolsError("OXPT_INVALID_ARGUMENT", "settings is required");
     }
 
-    const mainXmlText = await doc.getPartText("/word/document.xml");
+    let workingDoc = doc;
+    if (settings.removeMarkupForDocumentComparison) {
+      settings = {
+        ...settings,
+        removeRsidInfo: true,
+        removeGoBackBookmark: true,
+      };
+    }
+
+    if (settings.acceptRevisions) {
+      const { RevisionAccepter } = await import("./revision-accepter.js");
+      workingDoc = await RevisionAccepter.acceptRevisions(workingDoc);
+    }
+
+    const mainXmlText = await workingDoc.getPartText("/word/document.xml");
     const mainXml = parseXml(mainXmlText);
     let simplified = simplifyMainDocument(mainXml, settings);
 
@@ -17,7 +31,7 @@ export const MarkupSimplifier = {
       simplified = removeGoBackBookmarks(simplified);
     }
 
-    return doc.replacePartXml("/word/document.xml", simplified);
+    return workingDoc.replacePartXml("/word/document.xml", simplified);
   },
 };
 
@@ -58,6 +72,27 @@ function transformNode(node, settings) {
     ) {
       return [];
     }
+
+    if (settings.removeHyperlinks && local === "hyperlink") {
+      return transformChildren(node, settings);
+    }
+
+    if (settings.removeEndAndFootNotes) {
+      if (local === "footnoteReference" || local === "endnoteReference" || local === "footnoteRef" || local === "endnoteRef") {
+        return [];
+      }
+    }
+
+    if (settings.removeFieldCodes) {
+      if (local === "instrText" || local === "fldChar") return [];
+      if (local === "fldSimple") return transformChildren(node, settings);
+    }
+
+    if (settings.removePermissions && (local === "permStart" || local === "permEnd")) return [];
+
+    if (settings.removeProof && (local === "proofErr" || local === "noProof")) return [];
+
+    if (settings.removeWebHidden && local === "webHidden") return [];
 
     if (settings.removeBookmarks && (local === "bookmarkStart" || local === "bookmarkEnd")) return [];
 
@@ -157,4 +192,3 @@ function getAttrByLocalName(el, localName) {
 function inferQName(prefix, local) {
   return prefix ? `${prefix}:${local}` : local;
 }
-
