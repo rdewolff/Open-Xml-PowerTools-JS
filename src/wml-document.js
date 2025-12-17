@@ -17,7 +17,7 @@ export class WmlDocument extends OpenXmlPowerToolsDocument {
   }
 
   async getPartBytes(uri) {
-    const pkg = await OpcPackage.fromBytes(this.bytes);
+    const pkg = await OpcPackage.fromBytes(this.bytes, { adapter: this.zipAdapter });
     return pkg.getPartBytes(uri);
   }
 
@@ -66,9 +66,9 @@ export class WmlDocument extends OpenXmlPowerToolsDocument {
   }
 
   async replaceParts(replaceParts, options = {}) {
-    const adapter = options.adapter ?? (await getDefaultZipAdapter());
+    const adapter = options.adapter ?? this.zipAdapter ?? (await getDefaultZipAdapter());
     const pkg = await OpcPackage.fromBytes(this.bytes, { adapter });
     const newBytes = await pkg.toBytes({ replaceParts, adapter, deflateLevel: options.deflateLevel });
-    return new WmlDocument(newBytes, { fileName: this.fileName });
+    return new WmlDocument(newBytes, { fileName: this.fileName, zipAdapter: this.zipAdapter });
   }
 }

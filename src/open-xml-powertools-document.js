@@ -9,6 +9,7 @@ export class OpenXmlPowerToolsDocument {
     if (!bytes) throw new OpenXmlPowerToolsError("OXPT_INVALID_ARGUMENT", "bytes is required");
     this.bytes = coerceToBytes(bytes);
     this.fileName = options.fileName;
+    this.zipAdapter = options.zipAdapter;
   }
 
   static fromBytes(bytes, options) {
@@ -28,7 +29,7 @@ export class OpenXmlPowerToolsDocument {
   }
 
   async detectType() {
-    const pkg = await OpcPackage.fromBytes(this.bytes);
+    const pkg = await OpcPackage.fromBytes(this.bytes, { adapter: this.zipAdapter });
     if (pkg.isWordprocessingDocument()) return "docx";
     return "opc";
   }
@@ -42,4 +43,3 @@ export function coerceToBytes(bytes) {
   }
   throw new OpenXmlPowerToolsError("OXPT_INVALID_ARGUMENT", "Expected Uint8Array/ArrayBuffer");
 }
-
