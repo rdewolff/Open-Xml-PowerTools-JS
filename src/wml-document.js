@@ -44,6 +44,21 @@ export class WmlDocument extends OpenXmlPowerToolsDocument {
     return { paragraphs, text };
   }
 
+  async searchAndReplace(search, replace, matchCase = false) {
+    const { TextReplacer } = await import("./text-replacer.js");
+    return TextReplacer.searchAndReplace(this, search, replace, { matchCase });
+  }
+
+  async simplifyMarkup(settings) {
+    const { MarkupSimplifier } = await import("./markup-simplifier.js");
+    return MarkupSimplifier.simplifyMarkup(this, settings);
+  }
+
+  async acceptRevisions() {
+    const { RevisionAccepter } = await import("./revision-accepter.js");
+    return RevisionAccepter.acceptRevisions(this);
+  }
+
   async replacePartXml(partUri, xmlDocumentOrElement) {
     const xmlText = serializeXml(xmlDocumentOrElement, { xmlDeclaration: true });
     const bytes = new TextEncoder().encode(xmlText);
