@@ -122,3 +122,58 @@ test("WmlToHtmlConverter: headings, hyperlinks, tables, lists, images", async ()
   assert.match(res.html, /<img src="data:image\/png;base64,/);
   assert.ok(res.htmlElement, "expected htmlElement when output.format=xml");
 });
+
+test("WmlToHtmlConverter: listItemImplementations can inject custom markers", async () => {
+  const numberingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="1">
+    <w:lvl w:ilvl="0">
+      <w:numFmt w:val="decimal"/>
+      <w:lvlText w:val="%1."/>
+    </w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="9">
+    <w:abstractNumId w:val="1"/>
+  </w:num>
+</w:numbering>
+`;
+
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr>
+        <w:numPr>
+          <w:ilvl w:val="0"/>
+          <w:numId w:val="9"/>
+        </w:numPr>
+      </w:pPr>
+      <w:r><w:t>Item</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>
+`;
+
+  const bytes = await buildDocx({
+    documentXml,
+    contentTypes: {
+      overrides: [
+        {
+          PartName: "/word/numbering.xml",
+          ContentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml",
+        },
+      ],
+    },
+    extraEntries: [{ name: "word/numbering.xml", text: numberingXml }],
+  });
+  const doc = new WmlDocument(bytes);
+  const res = await WmlToHtmlConverter.convertToHtml(doc, {
+    listItemImplementations: {
+      default: (_lvlText, levelNumber, _numFmt) => `#${levelNumber}`,
+    },
+  });
+
+  assert.match(res.html, /class="pt-li-marker"/);
+  assert.match(res.html, />#1</);
+  assert.match(res.cssText, /\.pt-li-marker/);
+});
