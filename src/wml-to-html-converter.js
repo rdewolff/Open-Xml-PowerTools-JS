@@ -240,6 +240,8 @@ async function renderRun(ctx, paragraph, r) {
   const bold = !!effective.bold;
   const italic = !!effective.italic;
   const underline = !!effective.underline;
+  const strike = !!effective.strike;
+  const vertAlign = effective.vertAlign ? String(effective.vertAlign) : null;
   const cls = ctx.getRunClass(r);
 
   const pieces = [];
@@ -284,6 +286,9 @@ async function renderRun(ctx, paragraph, r) {
   if (underline) html = `<u>${html}</u>`;
   if (italic) html = `<em>${html}</em>`;
   if (bold) html = `<strong>${html}</strong>`;
+  if (strike) html = `<s>${html}</s>`;
+  if (vertAlign === "superscript") html = `<sup>${html}</sup>`;
+  if (vertAlign === "subscript") html = `<sub>${html}</sub>`;
   const styleAttr = ctx.getRunStyleAttr(effective);
   const classAttr = cls ? ` class="${escapeHtml(cls)}"` : "";
   const styleHtml = styleAttr ? ` style="${escapeHtml(styleAttr)}"` : "";
@@ -732,6 +737,8 @@ class WmlConversionContext {
     if (eff.sz != null) rules.push(`font-size:${halfPointsToPt(eff.sz)}pt`);
     if (eff.fontFamily) rules.push(`font-family:${cssString(eff.fontFamily)}`);
     if (eff.rtl) rules.push("direction:rtl;unicode-bidi:isolate");
+    if (eff.smallCaps) rules.push("font-variant:small-caps");
+    if (eff.caps) rules.push("text-transform:uppercase");
     if (eff.highlight) {
       const bg = mapHighlightToCss(eff.highlight);
       if (bg) rules.push(`background-color:${bg}`);
@@ -771,6 +778,8 @@ class WmlConversionContext {
     if (eff.color) rules.push(`color:${eff.color}`);
     if (eff.sz != null) rules.push(`font-size:${halfPointsToPt(eff.sz)}pt`);
     if (eff.fontFamily) rules.push(`font-family:${cssString(eff.fontFamily)}`);
+    if (eff.smallCaps) rules.push("font-variant:small-caps");
+    if (eff.caps) rules.push("text-transform:uppercase");
     if (eff.highlight) {
       const bg = mapHighlightToCss(eff.highlight);
       if (bg) rules.push(`background-color:${bg}`);

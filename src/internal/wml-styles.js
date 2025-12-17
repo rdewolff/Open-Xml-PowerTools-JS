@@ -145,11 +145,20 @@ export function parseRunProperties(rPr) {
   if (firstChildW(rPr, "b")) out.bold = true;
   if (firstChildW(rPr, "i")) out.italic = true;
   if (firstChildW(rPr, "rtl")) out.rtl = true;
+  if (firstChildW(rPr, "strike") || firstChildW(rPr, "dstrike")) out.strike = true;
+  if (firstChildW(rPr, "smallCaps")) out.smallCaps = true;
+  if (firstChildW(rPr, "caps")) out.caps = true;
 
   const u = firstChildW(rPr, "u");
   if (u) {
     const val = u.attributes.get("w:val") ?? u.attributes.get("val") ?? "single";
     out.underline = String(val) !== "none";
+  }
+
+  const vertAlign = firstChildW(rPr, "vertAlign");
+  if (vertAlign) {
+    const val = vertAlign.attributes.get("w:val") ?? vertAlign.attributes.get("val") ?? null;
+    if (val) out.vertAlign = String(val);
   }
 
   const color = firstChildW(rPr, "color");
