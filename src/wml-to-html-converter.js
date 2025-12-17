@@ -1,6 +1,8 @@
 import { parseXml, XmlDocument, XmlElement, XmlText, serializeXml } from "./internal/xml.js";
 import { bytesToBase64 } from "./util/base64.js";
 import { readWmlStyles, parseParagraphProperties, parseRunProperties } from "./internal/wml-styles.js";
+import { readWmlPartXml, findBody as findWBody, getSectPrs, selectHeaderFooterRefs, pickRef } from "./internal/wml-sections.js";
+import { computeTableGrid, tableBordersToCss, cellWidthToCss } from "./internal/wml-tables.js";
 
 const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
@@ -19,12 +21,13 @@ export const WmlToHtmlConverter = {
     const body = ctx.findBody();
     const htmlParts = await renderBodyChildren(ctx, body);
     const notesParts = ctx.renderNotesSections();
+    const hfParts = await ctx.renderHeaderFooterSections();
 
     const cssText = [ctx.generatedCssText, s.generalCss, s.additionalCss].filter(Boolean).join("\n");
     const htmlElement = buildHtmlElement({
       title: s.pageTitle,
       cssText,
-      bodyHtml: [...htmlParts, ...notesParts].filter(Boolean).join("\n"),
+      bodyHtml: [...hfParts.header, ...htmlParts, ...notesParts, ...hfParts.footer].filter(Boolean).join("\n"),
     });
     const html = `<!doctype html>\n${serializeXml(htmlElement)}`;
 
@@ -221,21 +224,46 @@ function escapeHtml(text) {
 }
 
 async function renderTable(ctx, tbl) {
+  const tblPr = (tbl.children ?? []).find((c) => c instanceof XmlElement && isW(c, "tblPr")) ?? null;
+  const borders = tableBordersToCss(tblPr);
+  const style = [];
+  if (borders?.top || borders?.left || borders?.bottom || borders?.right) style.push("border-collapse:collapse");
+  if (borders?.top) style.push(`border-top:${borders.top}`);
+  if (borders?.right) style.push(`border-right:${borders.right}`);
+  if (borders?.bottom) style.push(`border-bottom:${borders.bottom}`);
+  if (borders?.left) style.push(`border-left:${borders.left}`);
+
+  const grid = computeTableGrid(tbl);
   const rows = [];
-  for (const tr of tbl.children ?? []) {
-    if (!(tr instanceof XmlElement) || !isW(tr, "tr")) continue;
-    const cells = [];
-    for (const tc of tr.children ?? []) {
-      if (!(tc instanceof XmlElement) || !isW(tc, "tc")) continue;
+
+  for (const { tr, cells } of grid) {
+    const isHeaderRow = !!(tr.children ?? []).some((c) => c instanceof XmlElement && isW(c, "trPr") && c.descendantsByNameNS(W_NS, "tblHeader").next().value);
+    const tag = isHeaderRow ? "th" : "td";
+    const renderedCells = [];
+
+    for (const cell of cells) {
+      const tc = cell.tc;
+      const tcPr = (tc.children ?? []).find((c) => c instanceof XmlElement && isW(c, "tcPr")) ?? null;
+      const cellStyles = [];
+      if (borders?.insideV) cellStyles.push(`border-left:${borders.insideV}`);
+      if (borders?.insideH) cellStyles.push(`border-top:${borders.insideH}`);
+      const w = cellWidthToCss(tcPr);
+      if (w) cellStyles.push(`width:${w}`);
+
       const paras = [];
-      for (const p of tc.descendantsByNameNS(W_NS, "p")) {
-        paras.push(`<p>${await renderParagraphContents(ctx, p)}</p>`);
-      }
-      cells.push(`<td>${paras.join("")}</td>`);
+      for (const p of tc.descendantsByNameNS(W_NS, "p")) paras.push(`<p>${await renderParagraphContents(ctx, p)}</p>`);
+
+      const colspanAttr = cell.colspan > 1 ? ` colspan="${cell.colspan}"` : "";
+      const rowspanAttr = cell.rowspan > 1 ? ` rowspan="${cell.rowspan}"` : "";
+      const styleAttr = cellStyles.length ? ` style="${escapeHtml(cellStyles.join(";"))}"` : "";
+      renderedCells.push(`<${tag}${colspanAttr}${rowspanAttr}${styleAttr}>${paras.join("")}</${tag}>`);
     }
-    rows.push(`<tr>${cells.join("")}</tr>`);
+
+    rows.push(`<tr>${renderedCells.join("")}</tr>`);
   }
-  return `<table><tbody>${rows.join("")}</tbody></table>`;
+
+  const tableStyle = style.length ? ` style="${escapeHtml(style.join(";"))}"` : "";
+  return `<table${tableStyle}><tbody>${rows.join("")}</tbody></table>`;
 }
 
 function ensureListStack(ctx, out, listStack, listInfo) {
@@ -427,6 +455,7 @@ class WmlConversionContext {
     this.generatedCssText = "";
     this.footnotes = null;
     this.endnotes = null;
+    this._headerFooter = null;
   }
 
   static async create(doc, mainXml, warnings, settings) {
@@ -445,8 +474,7 @@ class WmlConversionContext {
   }
 
   findBody() {
-    const it = this.mainXml.root.descendantsByNameNS(W_NS, "body");
-    return it.next().value ?? findFirstByLocal(this.mainXml.root, "body");
+    return findWBody(this.mainXml.root);
   }
 
   getHeadingLevel(p) {
@@ -650,6 +678,70 @@ class WmlConversionContext {
     const endnotesHtml = this.renderNotesSection("endnote", this.endnotes);
     if (endnotesHtml) out.push(endnotesHtml);
     return out;
+  }
+
+  async renderHeaderFooterSections() {
+    const hf = await this.getHeaderFooterContent();
+    const header = hf?.headerHtml ? [`<div class="${escapeHtml(this.settings.cssClassPrefix)}header">${hf.headerHtml}</div>`] : [];
+    const footer = hf?.footerHtml ? [`<div class="${escapeHtml(this.settings.cssClassPrefix)}footer">${hf.footerHtml}</div>`] : [];
+    if (header.length || footer.length) {
+      this.generatedCssText += `\n.${this.settings.cssClassPrefix}header,.${this.settings.cssClassPrefix}footer{color:inherit;opacity:0.85;font-size:0.9em}`;
+      this.generatedCssText += `\n.${this.settings.cssClassPrefix}header{margin-bottom:1em}`;
+      this.generatedCssText += `\n.${this.settings.cssClassPrefix}footer{margin-top:1em}`;
+    }
+    return { header, footer };
+  }
+
+  async getHeaderFooterContent() {
+    if (this._headerFooter) return this._headerFooter;
+    const body = this.findBody();
+    const sectPrs = getSectPrs(body);
+    if (!sectPrs.length) {
+      this._headerFooter = null;
+      return null;
+    }
+
+    // For now, pick the last section properties (most common for single-section docs).
+    // If multiple sections exist with different headers/footers, emit a warning.
+    const refsLast = selectHeaderFooterRefs(sectPrs[sectPrs.length - 1]);
+    const headerRid = pickRef(refsLast.header);
+    const footerRid = pickRef(refsLast.footer);
+
+    if (sectPrs.length > 1) {
+      // Detect if references differ.
+      const firstRefs = selectHeaderFooterRefs(sectPrs[0]);
+      const h0 = pickRef(firstRefs.header);
+      const f0 = pickRef(firstRefs.footer);
+      if (h0 !== headerRid || f0 !== footerRid) {
+        this.warnings.push({
+          code: "OXPT_MULTIPLE_SECTIONS",
+          message: "Multiple sections detected; rendering header/footer from last section only",
+          part: "/word/document.xml",
+        });
+      }
+    }
+
+    const headerHtml = headerRid ? await this.renderHeaderFooterByRelId(headerRid) : "";
+    const footerHtml = footerRid ? await this.renderHeaderFooterByRelId(footerRid) : "";
+    this._headerFooter = { headerHtml, footerHtml };
+    return this._headerFooter;
+  }
+
+  async renderHeaderFooterByRelId(rid) {
+    const rel = this.rels?.byId.get(String(rid));
+    if (!rel) {
+      this.warnings.push({ code: "OXPT_HF_MISSING_REL", message: `Missing header/footer relationship: ${rid}`, part: "/word/_rels/document.xml.rels" });
+      return "";
+    }
+    const partUri = resolveWordTarget(rel.target);
+    const xml = await readWmlPartXml(this.doc, partUri);
+    if (!xml) {
+      this.warnings.push({ code: "OXPT_HF_MISSING_PART", message: `Missing header/footer part: ${partUri}`, part: partUri });
+      return "";
+    }
+    const body = findWBody(xml.root) ?? xml.root;
+    const blocks = await renderBodyChildren(this, body);
+    return blocks.join("");
   }
 
   renderNotesSection(kind, notes) {
