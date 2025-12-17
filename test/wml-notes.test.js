@@ -40,6 +40,6 @@ test("WmlToHtmlConverter: renders footnote references and footnotes section", as
   const res = await WmlToHtmlConverter.convertToHtml(doc);
   assert.match(res.html, /<sup><a href="#pt-footnote-1">1<\/a><\/sup>/);
   assert.match(res.html, /<ol class="pt-footnotes">/);
-  assert.match(res.html, /id="pt-footnote-1">Footnote text<\/li>/);
+  assert.match(res.html, /id="pt-footnote-1"/);
+  assert.match(res.html, /Footnote text/);
 });
-

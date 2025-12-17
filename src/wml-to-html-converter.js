@@ -33,8 +33,8 @@ export const WmlToHtmlConverter = {
     const ctx = await WmlConversionContext.create(doc, xmlDoc, warnings, s);
     const body = ctx.findBody();
     const htmlParts = await renderBodyWithSections(ctx, body);
-    const notesParts = ctx.renderNotesSections();
-    const commentsParts = ctx.renderCommentsSection();
+    const notesParts = await ctx.renderNotesSections();
+    const commentsParts = await ctx.renderCommentsSection();
 
     const cssText = [ctx.generatedCssText, s.generalCss, s.additionalCss].filter(Boolean).join("\n");
     const htmlElement = buildHtmlElement({
@@ -394,6 +394,11 @@ async function renderTableCellBlocks(ctx, tc) {
   return out;
 }
 
+async function renderBlocksFromContainer(ctx, container) {
+  // Render with the same block rules as the main body, but scoped to this container.
+  return renderBodyChildren(ctx, container);
+}
+
 function tableAlignToCss(tblPr) {
   const jc = (tblPr.children ?? []).find((c) => c instanceof XmlElement && isW(c, "jc")) ?? null;
   const val = jc?.attributes.get("w:val") ?? jc?.attributes.get("val") ?? null;
@@ -511,6 +516,13 @@ function simplifyForHtmlXml(xmlDoc, { includeComments = false } = {}) {
   return new XmlDocument(root);
 }
 
+function preprocessXmlForHtml(xmlDoc, settings) {
+  let x = xmlDoc;
+  if (settings?.preprocess?.acceptRevisions) x = acceptRevisionsXml(x);
+  if (settings?.preprocess?.simplifyMarkup) x = simplifyForHtmlXml(x, { includeComments: settings.includeComments });
+  return x;
+}
+
 function simplifyTransform(node, settings) {
   if (node instanceof XmlText) return new XmlText(node.text);
   if (!(node instanceof XmlElement)) return null;
@@ -603,9 +615,9 @@ class WmlConversionContext {
       readNumbering(doc),
       readContentTypes(doc),
       readWmlStyles(doc),
-      readNotes(doc, "/word/footnotes.xml"),
-      readNotes(doc, "/word/endnotes.xml"),
-      settings.includeComments ? readComments(doc, "/word/comments.xml") : Promise.resolve(null),
+      readNotes(doc, "/word/footnotes.xml", settings),
+      readNotes(doc, "/word/endnotes.xml", settings),
+      settings.includeComments ? readComments(doc, "/word/comments.xml", settings) : Promise.resolve(null),
     ]);
     const ctx = new WmlConversionContext({ doc, mainXml, warnings, settings, rels, numbering, contentTypes, styles });
     ctx.footnotes = footnotes;
@@ -828,11 +840,11 @@ class WmlConversionContext {
     return `<sup><a href="#${escapeHtml(this.settings.cssClassPrefix)}endnote-${escapeHtml(noteId)}">${escapeHtml(noteId)}</a></sup>`;
   }
 
-  renderNotesSections() {
+  async renderNotesSections() {
     const out = [];
-    const footnotesHtml = this.renderNotesSection("footnote", this.footnotes);
+    const footnotesHtml = await this.renderNotesSection("footnote", this.footnotes);
     if (footnotesHtml) out.push(footnotesHtml);
-    const endnotesHtml = this.renderNotesSection("endnote", this.endnotes);
+    const endnotesHtml = await this.renderNotesSection("endnote", this.endnotes);
     if (endnotesHtml) out.push(endnotesHtml);
     return out;
   }
@@ -853,7 +865,8 @@ class WmlConversionContext {
       this._headerFooterByRid.set(cacheKey, "");
       return "";
     }
-    const body = findWBody(xml.root) ?? xml.root;
+    const processed = preprocessXmlForHtml(xml, this.settings);
+    const body = findWBody(processed.root) ?? processed.root;
     const blocks = await renderBodyChildren(this, body);
     const html = blocks.join("");
     this._headerFooterByRid.set(cacheKey, html);
@@ -868,14 +881,15 @@ class WmlConversionContext {
     return `<sup><a href="#${escapeHtml(this.settings.cssClassPrefix)}comment-${escapeHtml(cid)}">c${escapeHtml(cid)}</a></sup>`;
   }
 
-  renderCommentsSection() {
+  async renderCommentsSection() {
     if (!this.settings.includeComments) return [];
     if (!this.comments?.orderedIds?.length) return [];
     const items = [];
     for (const id of this.comments.orderedIds) {
-      const text = this.comments.byId.get(id) ?? "";
+      const el = this.comments.byId.get(id) ?? null;
+      const html = el ? (await renderBlocksFromContainer(this, el)).join("") : "";
       items.push(
-        `<li id="${escapeHtml(this.settings.cssClassPrefix)}comment-${escapeHtml(id)}">${escapeHtml(text)}</li>`,
+        `<li id="${escapeHtml(this.settings.cssClassPrefix)}comment-${escapeHtml(id)}">${html}</li>`,
       );
     }
     if (!items.length) return [];
@@ -883,13 +897,14 @@ class WmlConversionContext {
     return [`<hr/><ol class="${escapeHtml(this.settings.cssClassPrefix)}comments">${items.join("")}</ol>`];
   }
 
-  renderNotesSection(kind, notes) {
+  async renderNotesSection(kind, notes) {
     if (!notes?.orderedIds?.length) return "";
     const items = [];
     for (const id of notes.orderedIds) {
-      const text = notes.byId.get(id) ?? "";
+      const el = notes.byId.get(id) ?? null;
+      const html = el ? (await renderBlocksFromContainer(this, el)).join("") : "";
       items.push(
-        `<li id="${escapeHtml(this.settings.cssClassPrefix)}${kind}-${escapeHtml(id)}">${escapeHtml(text)}</li>`,
+        `<li id="${escapeHtml(this.settings.cssClassPrefix)}${kind}-${escapeHtml(id)}">${html}</li>`,
       );
     }
     if (!items.length) return "";
@@ -962,9 +977,10 @@ function detectDocumentLanguage(root) {
   return null;
 }
 
-async function readNotes(doc, partUri) {
+async function readNotes(doc, partUri, settings) {
   try {
-    const xml = parseXml(await doc.getPartText(partUri));
+    let xml = parseXml(await doc.getPartText(partUri));
+    xml = preprocessXmlForHtml(xml, settings);
     const byId = new Map();
     const orderedIds = [];
 
@@ -977,8 +993,7 @@ async function readNotes(doc, partUri) {
       const type = el.attributes.get("w:type") ?? el.attributes.get("type");
       if (type) continue; // separators/continuations/etc
       const idStr = String(id);
-      const text = [...el.descendantsByNameNS(W_NS, "t")].map((t) => t.textContent()).join("");
-      byId.set(idStr, text);
+      byId.set(idStr, el);
       orderedIds.push(idStr);
     }
 
@@ -990,9 +1005,10 @@ async function readNotes(doc, partUri) {
   }
 }
 
-async function readComments(doc, partUri) {
+async function readComments(doc, partUri, settings) {
   try {
-    const xml = parseXml(await doc.getPartText(partUri));
+    let xml = parseXml(await doc.getPartText(partUri));
+    xml = preprocessXmlForHtml(xml, settings);
     const byId = new Map();
     const orderedIds = [];
 
@@ -1002,8 +1018,7 @@ async function readComments(doc, partUri) {
       const id = el.attributes.get("w:id") ?? el.attributes.get("id");
       if (id == null) continue;
       const idStr = String(id);
-      const text = [...el.descendantsByNameNS(W_NS, "t")].map((t) => t.textContent()).join("");
-      byId.set(idStr, text);
+      byId.set(idStr, el);
       orderedIds.push(idStr);
     }
 
