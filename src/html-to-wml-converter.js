@@ -41,8 +41,10 @@ class HtmlToWmlContext {
   constructor() {
     this.nextRelId = 10;
     this.nextBookmarkId = 1;
+    this.nextNumId = 1;
     this.relationships = [];
     this.hasNumbering = false;
+    this.numberingInstances = []; // { numId, abstractNumId, startOverrides: Map<ilvl, start> }
     this.media = []; // { name, bytes, contentType }
   }
 
@@ -81,6 +83,19 @@ class HtmlToWmlContext {
   addBookmark(name) {
     const id = this.nextBookmarkId++;
     return { id: String(id), name: String(name) };
+  }
+
+  allocateNumberingInstance({ isOrdered, ilvl, startOverride }) {
+    this.hasNumbering = true;
+    const numId = String(this.nextNumId++);
+    const abstractNumId = isOrdered ? "1" : "2";
+    const startOverrides = new Map();
+    if (isOrdered && startOverride != null && Number(startOverride) !== 1) {
+      const n = Number(startOverride);
+      if (Number.isFinite(n) && n > 0) startOverrides.set(String(ilvl), String(n));
+    }
+    this.numberingInstances.push({ numId, abstractNumId, startOverrides });
+    return numId;
   }
 }
 
@@ -121,7 +136,6 @@ function htmlToBlocks(container, ctx, listLevel) {
     }
 
     if (tag === "ol" || tag === "ul") {
-      ctx.hasNumbering = true;
       const isOrdered = tag === "ol";
       out.push(...listToParagraphs(child, ctx, isOrdered, listLevel));
       continue;
@@ -142,6 +156,8 @@ function htmlToBlocks(container, ctx, listLevel) {
 }
 
 function listToParagraphs(listEl, ctx, isOrdered, listLevel) {
+  const startOverride = isOrdered ? parsePositiveInt(listEl.attributes.get("start")) : null;
+  const numId = ctx.allocateNumberingInstance({ isOrdered, ilvl: listLevel, startOverride });
   const out = [];
   for (const li of listEl.children ?? []) {
     if (!(li instanceof XmlElement) || li.qname.toLowerCase() !== "li") continue;
@@ -164,12 +180,11 @@ function listToParagraphs(listEl, ctx, isOrdered, listLevel) {
     }
 
     const runs = htmlInlineToRuns(inlineContainer, ctx, { bold: false, italic: false, underline: false });
-    out.push(makeListParagraph(runs, isOrdered ? 1 : 2, listLevel));
+    out.push(makeListParagraph(runs, numId, listLevel));
 
     for (const nb of nestedBlocks) {
       const nbTag = nb.qname.toLowerCase();
       if (nbTag === "ol" || nbTag === "ul") {
-        ctx.hasNumbering = true;
         out.push(...listToParagraphs(nb, ctx, nbTag === "ol", listLevel + 1));
       } else if (nbTag === "table") {
         out.push(makeTable(nb, ctx));
@@ -579,7 +594,7 @@ ${ctOverrides.map((o) => `  <Override PartName="${o.PartName}" ContentType="${o.
 
   const styles = buildStylesXml();
 
-  const numbering = ctx.hasNumbering ? buildNumberingXml() : null;
+  const numbering = ctx.hasNumbering ? buildNumberingXml(ctx) : null;
 
   const documentXmlText = serializeXml(wmlXmlDoc, { xmlDeclaration: true });
 
@@ -615,8 +630,15 @@ function buildStylesXml() {
 `;
 }
 
-function buildNumberingXml() {
-  // numId=1 decimal, numId=2 bullet; supports 9 levels each.
+function buildNumberingXml(ctx) {
+  // Supports 9 levels each for ordered/bullets, with per-list numId instances.
+  const nums = ctx.numberingInstances.length
+    ? ctx.numberingInstances
+    : [
+      { numId: "1", abstractNumId: "1", startOverrides: new Map() },
+      { numId: "2", abstractNumId: "2", startOverrides: new Map() },
+    ];
+
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:numbering xmlns:w="${W_NS}">
   <w:abstractNum w:abstractNumId="1">
@@ -627,7 +649,6 @@ function buildNumberingXml() {
       <w:lvlText w:val="%${i + 1}."/>
     </w:lvl>`).join("\n")}
   </w:abstractNum>
-  <w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>
 
   <w:abstractNum w:abstractNumId="2">
     ${Array.from({ length: 9 }, (_, i) => `
@@ -637,7 +658,16 @@ function buildNumberingXml() {
       <w:lvlText w:val="•"/>
     </w:lvl>`).join("\n")}
   </w:abstractNum>
-  <w:num w:numId="2"><w:abstractNumId w:val="2"/></w:num>
+  ${nums.map((n) => {
+    const overrides = [...(n.startOverrides?.entries?.() ?? [])].map(([ilvl, start]) => `
+    <w:lvlOverride w:ilvl="${ilvl}">
+      <w:startOverride w:val="${start}"/>
+    </w:lvlOverride>`).join("");
+    return `
+  <w:num w:numId="${n.numId}">
+    <w:abstractNumId w:val="${n.abstractNumId}"/>${overrides}
+  </w:num>`;
+  }).join("\n")}
 </w:numbering>
 `;
 }

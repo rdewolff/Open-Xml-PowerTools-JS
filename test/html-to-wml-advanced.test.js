@@ -111,3 +111,28 @@ test("HtmlToWmlConverter: supports internal hyperlinks via bookmarks", async () 
   assert.match(html.html, /<a id="BM1"\/?>/);
   assert.match(html.html, /<a href="#BM1">/);
 });
+
+test("HtmlToWmlConverter: honors <ol start> without affecting other lists", async () => {
+  const xhtml = `<?xml version="1.0" encoding="UTF-8"?>
+<html>
+  <body>
+    <ol start="5"><li>Five</li></ol>
+    <ol><li>One</li></ol>
+  </body>
+</html>`;
+
+  const doc = await HtmlToWmlConverter.convertHtmlToWml("", "", "", xhtml, {});
+  const mainXml = await doc.getPartText("/word/document.xml");
+  // Expect at least two distinct numIds used (separate list instances).
+  assert.match(mainXml, /<w:numId[^>]*w:val="1"/);
+  assert.match(mainXml, /<w:numId[^>]*w:val="2"/);
+
+  const numberingXml = await doc.getPartText("/word/numbering.xml");
+  assert.match(numberingXml, /<w:num w:numId="1">[\s\S]*<w:startOverride w:val="5"/);
+  assert.doesNotMatch(numberingXml, /<w:num w:numId="2">[\s\S]*<w:startOverride/);
+
+  const html = await WmlToHtmlConverter.convertToHtml(doc);
+  assert.match(html.html, /<ol[^>]*start="5"/);
+  assert.match(html.html, /Five/);
+  assert.match(html.html, /One/);
+});
