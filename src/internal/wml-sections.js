@@ -24,6 +24,40 @@ export function getSectPrs(body) {
   return out;
 }
 
+export function splitBodyIntoSections(body) {
+  // In WordprocessingML, section properties (w:sectPr) terminate a section and apply to the
+  // content that precedes them. They can appear as:
+  // - direct child of w:body (typically as the last element)
+  // - within a paragraph's properties: w:p/w:pPr/w:sectPr (section break)
+  if (!body) return [{ nodes: [], sectPr: null }];
+
+  const out = [];
+  let cur = [];
+
+  for (const child of body.children ?? []) {
+    if (!(child instanceof XmlElement)) continue;
+
+    if (isW(child, "sectPr")) {
+      out.push({ nodes: cur, sectPr: child });
+      cur = [];
+      continue;
+    }
+
+    cur.push(child);
+
+    if (isW(child, "p")) {
+      const sectPr = findParagraphSectPr(child);
+      if (sectPr) {
+        out.push({ nodes: cur, sectPr });
+        cur = [];
+      }
+    }
+  }
+
+  if (cur.length || !out.length) out.push({ nodes: cur, sectPr: null });
+  return out;
+}
+
 export function selectHeaderFooterRefs(sectPr) {
   // Prefer default, else first/even.
   const refs = { header: null, footer: null };
@@ -53,3 +87,15 @@ function findFirstByLocal(root, localName) {
   return null;
 }
 
+function findParagraphSectPr(p) {
+  const pPr = (p.children ?? []).find((c) => c instanceof XmlElement && isW(c, "pPr")) ?? null;
+  if (!pPr) return null;
+  return (pPr.children ?? []).find((c) => c instanceof XmlElement && isW(c, "sectPr")) ?? null;
+}
+
+function isW(el, localName) {
+  const { prefix, local } = el.nameParts();
+  if (local !== localName) return false;
+  if (prefix === "w") return true;
+  return el.lookupNamespaceUri(prefix) === W_NS;
+}

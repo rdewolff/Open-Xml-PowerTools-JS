@@ -30,6 +30,7 @@ test("WmlToHtmlConverter: headings, hyperlinks, tables, lists, images", async ()
 <w:document
   xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
   xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
   xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
   <w:body>
     <w:p>
@@ -72,6 +73,7 @@ test("WmlToHtmlConverter: headings, hyperlinks, tables, lists, images", async ()
     <w:p>
       <w:r>
         <w:drawing>
+          <wp:extent cx="914400" cy="914400"/>
           <a:blip r:embed="rIdImg"/>
         </w:drawing>
       </w:r>
@@ -120,6 +122,7 @@ test("WmlToHtmlConverter: headings, hyperlinks, tables, lists, images", async ()
   assert.match(res.html, /<table>/);
   assert.match(res.html, /<td>.*A1.*<\/td>/);
   assert.match(res.html, /<img src="data:image\/png;base64,/);
+  assert.match(res.html, /style="[^"]*width:96px/);
   assert.ok(res.htmlElement, "expected htmlElement when output.format=xml");
 });
 

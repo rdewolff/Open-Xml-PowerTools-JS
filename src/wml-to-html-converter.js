@@ -1,10 +1,15 @@
 import { parseXml, XmlDocument, XmlElement, XmlText, serializeXml } from "./internal/xml.js";
 import { bytesToBase64 } from "./util/base64.js";
 import { readWmlStyles, parseParagraphProperties, parseRunProperties } from "./internal/wml-styles.js";
-import { readWmlPartXml, findBody as findWBody, getSectPrs, selectHeaderFooterRefs, pickRef } from "./internal/wml-sections.js";
+import { readWmlPartXml, findBody as findWBody, splitBodyIntoSections, selectHeaderFooterRefs, pickRef } from "./internal/wml-sections.js";
 import {
   computeTableGrid,
   tableBordersToCss,
+  tableWidthToCss,
+  tableCellPaddingToCss,
+  tableShadingToCss,
+  rowShadingToCss,
+  tableBidiVisual,
   cellBordersToCss,
   cellShadingToCss,
   cellVAlignToCss,
@@ -21,21 +26,21 @@ export const WmlToHtmlConverter = {
     // Do this in-memory for `/word/document.xml` so we don't rewrite the DOCX unless user requests.
     let xmlDoc = parseXml(await doc.getPartText("/word/document.xml"));
     if (s.preprocess.acceptRevisions) xmlDoc = acceptRevisionsXml(xmlDoc);
-    if (s.preprocess.simplifyMarkup) xmlDoc = simplifyForHtmlXml(xmlDoc);
+    if (s.preprocess.simplifyMarkup) xmlDoc = simplifyForHtmlXml(xmlDoc, { includeComments: s.includeComments });
 
     const warnings = [];
 
     const ctx = await WmlConversionContext.create(doc, xmlDoc, warnings, s);
     const body = ctx.findBody();
-    const htmlParts = await renderBodyChildren(ctx, body);
+    const htmlParts = await renderBodyWithSections(ctx, body);
     const notesParts = ctx.renderNotesSections();
-    const hfParts = await ctx.renderHeaderFooterSections();
+    const commentsParts = ctx.renderCommentsSection();
 
     const cssText = [ctx.generatedCssText, s.generalCss, s.additionalCss].filter(Boolean).join("\n");
     const htmlElement = buildHtmlElement({
       title: s.pageTitle,
       cssText,
-      bodyHtml: [...hfParts.header, ...htmlParts, ...notesParts, ...hfParts.footer].filter(Boolean).join("\n"),
+      bodyHtml: [...htmlParts, ...notesParts, ...commentsParts].filter(Boolean).join("\n"),
     });
     const html = `<!doctype html>\n${serializeXml(htmlElement)}`;
 
@@ -54,12 +59,13 @@ function normalizeSettings(settings) {
     pageTitle: settings.pageTitle ?? "",
     cssClassPrefix: settings.cssClassPrefix ?? "pt-",
     fabricateCssClasses: settings.fabricateCssClasses ?? true,
-    generalCss: settings.generalCss ?? "span { white-space: pre-wrap; }",
+    generalCss: settings.generalCss ?? "span { white-space: pre-wrap; tab-size: 4; }",
     additionalCss: settings.additionalCss ?? "",
     restrictToSupportedLanguages: settings.restrictToSupportedLanguages ?? false,
     restrictToSupportedNumberingFormats: settings.restrictToSupportedNumberingFormats ?? false,
     listItemImplementations: settings.listItemImplementations ?? null,
     imageHandler: settings.imageHandler ?? null,
+    includeComments: settings.includeComments ?? false,
     output: { format: settings.output?.format ?? "string" },
     preprocess: {
       acceptRevisions: settings.preprocess?.acceptRevisions ?? true,
@@ -82,6 +88,65 @@ function buildHtmlElement({ title, cssText, bodyHtml }) {
   const body = new XmlElement("body", new Map(), bodyNodes);
   const head = new XmlElement("head", new Map(), headChildren);
   return new XmlElement("html", new Map(), [head, body]);
+}
+
+async function renderBodyWithSections(ctx, body) {
+  const sections = splitBodyIntoSections(body);
+  if (!sections.length) return [];
+
+  const prefix = ctx.settings.cssClassPrefix;
+  const out = [];
+
+  let lastHeaderRid = null;
+  let lastFooterRid = null;
+  let usedHeaderFooter = false;
+
+  for (const s of sections) {
+    const refs = s.sectPr ? selectHeaderFooterRefs(s.sectPr) : { header: null, footer: null };
+    let headerRid = pickRef(refs.header);
+    let footerRid = pickRef(refs.footer);
+
+    // In practice, new sections typically re-use previous header/footer unless explicitly changed.
+    if (!headerRid) headerRid = lastHeaderRid;
+    if (!footerRid) footerRid = lastFooterRid;
+    lastHeaderRid = headerRid;
+    lastFooterRid = footerRid;
+
+    const headerHtml = headerRid ? await ctx.renderHeaderFooterByRelId(headerRid) : "";
+    const footerHtml = footerRid ? await ctx.renderHeaderFooterByRelId(footerRid) : "";
+    const blocks = await renderBodyChildren(ctx, { children: s.nodes });
+
+    const sectionParts = [];
+    if (headerHtml) {
+      usedHeaderFooter = true;
+      sectionParts.push(`<div class="${escapeHtml(prefix)}header">${headerHtml}</div>`);
+    }
+    sectionParts.push(...blocks);
+    if (footerHtml) {
+      usedHeaderFooter = true;
+      sectionParts.push(`<div class="${escapeHtml(prefix)}footer">${footerHtml}</div>`);
+    }
+
+    if (sectionParts.length) out.push(`<section class="${escapeHtml(prefix)}section">${sectionParts.join("\n")}</section>`);
+  }
+
+  if (usedHeaderFooter) ensureHeaderFooterCss(ctx);
+  if (sections.length > 1) ensureSectionCss(ctx);
+  return out;
+}
+
+function ensureHeaderFooterCss(ctx) {
+  const prefix = ctx.settings.cssClassPrefix;
+  if (ctx.generatedCssText.includes(`.${prefix}header`) || ctx.generatedCssText.includes(`.${prefix}footer`)) return;
+  ctx.generatedCssText += `\n.${prefix}header,.${prefix}footer{color:inherit;opacity:0.85;font-size:0.9em}`;
+  ctx.generatedCssText += `\n.${prefix}header{margin-bottom:1em}`;
+  ctx.generatedCssText += `\n.${prefix}footer{margin-top:1em}`;
+}
+
+function ensureSectionCss(ctx) {
+  const prefix = ctx.settings.cssClassPrefix;
+  if (ctx.generatedCssText.includes(`.${prefix}section`)) return;
+  ctx.generatedCssText += `\n.${prefix}section{margin-bottom:1.25em}`;
 }
 
 async function renderBodyChildren(ctx, body) {
@@ -114,7 +179,8 @@ async function renderBodyChildren(ctx, body) {
       const classAttr = cls ? ` class="${escapeHtml(cls)}"` : "";
       const styleAttr = ctx.getParagraphStyleAttr(child);
       const styleHtml = styleAttr ? ` style="${escapeHtml(styleAttr)}"` : "";
-      out.push(`<${tag}${classAttr}${styleHtml}>${await renderParagraphContents(ctx, child)}</${tag}>`);
+      const dirAttr = ctx.getParagraphDirAttr(child);
+      out.push(`<${tag}${classAttr}${dirAttr}${styleHtml}>${await renderParagraphContents(ctx, child)}</${tag}>`);
       continue;
     }
 
@@ -180,7 +246,7 @@ async function renderRun(ctx, paragraph, r) {
   for (const child of r.children ?? []) {
     if (!child?.qname) continue;
     if (isW(child, "t")) pieces.push(escapeHtml(child.textContent()));
-    else if (isW(child, "tab")) pieces.push("    ");
+    else if (isW(child, "tab")) pieces.push("\t");
     else if (isW(child, "br")) pieces.push("<br/>");
     else if (isW(child, "cr")) pieces.push("<br/>");
     else if (isW(child, "noBreakHyphen")) pieces.push("‑");
@@ -192,6 +258,10 @@ async function renderRun(ctx, paragraph, r) {
     else if (isW(child, "endnoteReference")) {
       const id = child.attributes.get("w:id") ?? child.attributes.get("id");
       pieces.push(ctx.renderEndnoteRef(id));
+    }
+    else if (isW(child, "commentReference")) {
+      const id = child.attributes.get("w:id") ?? child.attributes.get("id");
+      pieces.push(ctx.renderCommentRef(id));
     }
     else if (isW(child, "instrText") || isW(child, "fldChar")) {
       // Field code plumbing; ignore by default (visible text typically appears as w:t between separate/end).
@@ -217,7 +287,8 @@ async function renderRun(ctx, paragraph, r) {
   const styleAttr = ctx.getRunStyleAttr(effective);
   const classAttr = cls ? ` class="${escapeHtml(cls)}"` : "";
   const styleHtml = styleAttr ? ` style="${escapeHtml(styleAttr)}"` : "";
-  return html ? `<span${classAttr}${styleHtml}>${html}</span>` : "";
+  const dirAttr = effective.rtl ? ` dir="rtl"` : "";
+  return html ? `<span${classAttr}${dirAttr}${styleHtml}>${html}</span>` : "";
 }
 
 function findFirstByLocal(root, localName) {
@@ -239,28 +310,40 @@ async function renderTable(ctx, tbl) {
   const tblPr = (tbl.children ?? []).find((c) => c instanceof XmlElement && isW(c, "tblPr")) ?? null;
   const borders = tableBordersToCss(tblPr);
   const style = [];
-  if (borders?.top || borders?.left || borders?.bottom || borders?.right) style.push("border-collapse:collapse");
+  if (borders?.top || borders?.left || borders?.bottom || borders?.right || borders?.insideH || borders?.insideV) style.push("border-collapse:collapse");
   if (borders?.top) style.push(`border-top:${borders.top}`);
   if (borders?.right) style.push(`border-right:${borders.right}`);
   if (borders?.bottom) style.push(`border-bottom:${borders.bottom}`);
   if (borders?.left) style.push(`border-left:${borders.left}`);
+  const tblW = tableWidthToCss(tblPr);
+  if (tblW) style.push(`width:${tblW}`);
   const tableAlign = tblPr ? tableAlignToCss(tblPr) : null;
   if (tableAlign) style.push(tableAlign);
+  const tblBg = tableShadingToCss(tblPr);
+  if (tblBg) style.push(`background-color:${tblBg}`);
+  const defaultCellPad = tableCellPaddingToCss(tblPr);
+  const dirAttr = tableBidiVisual(tblPr) ? ` dir="rtl"` : "";
 
   const grid = computeTableGrid(tbl);
-  const rows = [];
+  const theadRows = [];
+  const tbodyRows = [];
+  let isStillInHead = true;
 
-  for (const { tr, cells } of grid) {
-    const isHeaderRow = !!(tr.children ?? []).some((c) => c instanceof XmlElement && isW(c, "trPr") && c.descendantsByNameNS(W_NS, "tblHeader").next().value);
-    const tag = isHeaderRow ? "th" : "td";
+  for (let rowIndex = 0; rowIndex < grid.length; rowIndex++) {
+    const { tr, cells } = grid[rowIndex];
+    const trPr = (tr.children ?? []).find((c) => c instanceof XmlElement && isW(c, "trPr")) ?? null;
+    const isHeaderRow = !!(trPr && trPr.descendantsByNameNS(W_NS, "tblHeader").next().value);
+    const rowBg = rowShadingToCss(trPr);
+    const rowGoesToHead = isStillInHead && isHeaderRow;
+    if (!rowGoesToHead) isStillInHead = false;
     const renderedCells = [];
 
     for (const cell of cells) {
       const tc = cell.tc;
       const tcPr = (tc.children ?? []).find((c) => c instanceof XmlElement && isW(c, "tcPr")) ?? null;
       const cellStyles = [];
-      if (borders?.insideV) cellStyles.push(`border-left:${borders.insideV}`);
-      if (borders?.insideH) cellStyles.push(`border-top:${borders.insideH}`);
+      if (borders?.insideV && cell.col > 0) cellStyles.push(`border-left:${borders.insideV}`);
+      if (borders?.insideH && rowIndex > 0) cellStyles.push(`border-top:${borders.insideH}`);
       const w = cellWidthToCss(tcPr);
       if (w) cellStyles.push(`width:${w}`);
       const cb = cellBordersToCss(tcPr);
@@ -268,11 +351,11 @@ async function renderTable(ctx, tbl) {
       if (cb?.right) cellStyles.push(`border-right:${cb.right}`);
       if (cb?.bottom) cellStyles.push(`border-bottom:${cb.bottom}`);
       if (cb?.left) cellStyles.push(`border-left:${cb.left}`);
-      const bg = cellShadingToCss(tcPr);
+      const bg = cellShadingToCss(tcPr) ?? rowBg;
       if (bg) cellStyles.push(`background-color:${bg}`);
       const va = cellVAlignToCss(tcPr);
       if (va) cellStyles.push(`vertical-align:${va}`);
-      const pad = cellPaddingToCss(tcPr);
+      const pad = cellPaddingToCss(tcPr) ?? defaultCellPad;
       if (pad) cellStyles.push(pad);
 
       const blocks = await renderTableCellBlocks(ctx, tc);
@@ -280,14 +363,18 @@ async function renderTable(ctx, tbl) {
       const colspanAttr = cell.colspan > 1 ? ` colspan="${cell.colspan}"` : "";
       const rowspanAttr = cell.rowspan > 1 ? ` rowspan="${cell.rowspan}"` : "";
       const styleAttr = cellStyles.length ? ` style="${escapeHtml(cellStyles.join(";"))}"` : "";
-      renderedCells.push(`<${tag}${colspanAttr}${rowspanAttr}${styleAttr}>${blocks.join("")}</${tag}>`);
+      const cellTag = isHeaderRow ? "th" : "td";
+      renderedCells.push(`<${cellTag}${colspanAttr}${rowspanAttr}${styleAttr}>${blocks.join("")}</${cellTag}>`);
     }
 
-    rows.push(`<tr>${renderedCells.join("")}</tr>`);
+    const rowHtml = `<tr>${renderedCells.join("")}</tr>`;
+    (rowGoesToHead ? theadRows : tbodyRows).push(rowHtml);
   }
 
   const tableStyle = style.length ? ` style="${escapeHtml(style.join(";"))}"` : "";
-  return `<table${tableStyle}><tbody>${rows.join("")}</tbody></table>`;
+  const theadHtml = theadRows.length ? `<thead>${theadRows.join("")}</thead>` : "";
+  const tbodyHtml = `<tbody>${tbodyRows.join("")}</tbody>`;
+  return `<table${dirAttr}${tableStyle}>${theadHtml}${tbodyHtml}</table>`;
 }
 
 async function renderTableCellBlocks(ctx, tc) {
@@ -406,10 +493,10 @@ function acceptChildren(el) {
   return new XmlElement("_oxptjs_unwrap_", new Map(), children);
 }
 
-function simplifyForHtmlXml(xmlDoc) {
+function simplifyForHtmlXml(xmlDoc, { includeComments = false } = {}) {
   // Roughly matches the C# converter's SimplifyMarkupSettings used for HTML conversion.
   const settings = {
-    removeComments: true,
+    removeComments: !includeComments,
     removeContentControls: true,
     removeLastRenderedPageBreak: true,
     removePermissions: true,
@@ -506,21 +593,24 @@ class WmlConversionContext {
     this.generatedCssText = "";
     this.footnotes = null;
     this.endnotes = null;
-    this._headerFooter = null;
+    this.comments = null;
+    this._headerFooterByRid = new Map();
   }
 
   static async create(doc, mainXml, warnings, settings) {
-    const [rels, numbering, contentTypes, styles, footnotes, endnotes] = await Promise.all([
+    const [rels, numbering, contentTypes, styles, footnotes, endnotes, comments] = await Promise.all([
       readRelationships(doc, "/word/_rels/document.xml.rels"),
       readNumbering(doc),
       readContentTypes(doc),
       readWmlStyles(doc),
       readNotes(doc, "/word/footnotes.xml"),
       readNotes(doc, "/word/endnotes.xml"),
+      settings.includeComments ? readComments(doc, "/word/comments.xml") : Promise.resolve(null),
     ]);
     const ctx = new WmlConversionContext({ doc, mainXml, warnings, settings, rels, numbering, contentTypes, styles });
     ctx.footnotes = footnotes;
     ctx.endnotes = endnotes;
+    ctx.comments = comments;
     ctx._documentLang = detectDocumentLanguage(mainXml.root);
     return ctx;
   }
@@ -579,13 +669,21 @@ class WmlConversionContext {
       const ta = mapJustificationToCssTextAlign(eff.jc);
       if (ta) rules.push(`text-align:${ta}`);
     }
+    if (eff.bidi) rules.push("direction:rtl");
     if (eff.before != null) rules.push(`margin-top:${twipsToPt(eff.before)}pt`);
     if (eff.after != null) rules.push(`margin-bottom:${twipsToPt(eff.after)}pt`);
     if (eff.left != null) rules.push(`margin-left:${twipsToPt(eff.left)}pt`);
     if (eff.right != null) rules.push(`margin-right:${twipsToPt(eff.right)}pt`);
     if (eff.firstLine != null) rules.push(`text-indent:${twipsToPt(eff.firstLine)}pt`);
     if (eff.hanging != null) rules.push(`text-indent:-${twipsToPt(eff.hanging)}pt`);
+    const lh = lineHeightCss(eff.line, eff.lineRule);
+    if (lh) rules.push(lh);
     return rules.length ? rules.join(";") : "";
+  }
+
+  getParagraphDirAttr(p) {
+    const eff = this.getEffectiveParagraphProperties(p);
+    return eff.bidi ? ` dir="rtl"` : "";
   }
 
   getEffectiveParagraphProperties(p) {
@@ -621,6 +719,7 @@ class WmlConversionContext {
     if (eff.color) rules.push(`color:${eff.color}`);
     if (eff.sz != null) rules.push(`font-size:${halfPointsToPt(eff.sz)}pt`);
     if (eff.fontFamily) rules.push(`font-family:${cssString(eff.fontFamily)}`);
+    if (eff.rtl) rules.push("direction:rtl;unicode-bidi:isolate");
     if (eff.highlight) {
       const bg = mapHighlightToCss(eff.highlight);
       if (bg) rules.push(`background-color:${bg}`);
@@ -638,12 +737,15 @@ class WmlConversionContext {
       const ta = mapJustificationToCssTextAlign(style.para.jc);
       if (ta) rules.push(`text-align:${ta}`);
     }
+    if (style.para.bidi) rules.push("direction:rtl");
     if (style.para.before != null) rules.push(`margin-top:${twipsToPt(style.para.before)}pt`);
     if (style.para.after != null) rules.push(`margin-bottom:${twipsToPt(style.para.after)}pt`);
     if (style.para.left != null) rules.push(`margin-left:${twipsToPt(style.para.left)}pt`);
     if (style.para.right != null) rules.push(`margin-right:${twipsToPt(style.para.right)}pt`);
     if (style.para.firstLine != null) rules.push(`text-indent:${twipsToPt(style.para.firstLine)}pt`);
     if (style.para.hanging != null) rules.push(`text-indent:-${twipsToPt(style.para.hanging)}pt`);
+    const lh = lineHeightCss(style.para.line, style.para.lineRule);
+    if (lh) rules.push(lh);
     if (rules.length) this.generatedCssText += `\n.${className}{${rules.join(";")}}`;
   }
 
@@ -695,18 +797,21 @@ class WmlConversionContext {
       heightEmus: extractExtent(drawingElement)?.cy ?? undefined,
       suggestedStyle: null,
     };
+    info.suggestedStyle = suggestedImgStyle(info);
 
     if (this.settings.imageHandler) {
       const res = this.settings.imageHandler(info);
       if (!res) return "";
       if (res.element) return res.element;
       const attrs = res.attrs ?? {};
+      if (info.suggestedStyle && attrs.style == null) attrs.style = info.suggestedStyle;
       return `<img src="${escapeHtml(res.src)}"${renderAttrs(attrs)}${renderAlt(info.altText)}/>`;
     }
 
     const b64 = bytesToBase64(bytes);
     const src = `data:${contentType};base64,${b64}`;
-    return `<img src="${src}"${renderAlt(info.altText)}/>`;
+    const styleAttr = info.suggestedStyle ? ` style="${escapeHtml(info.suggestedStyle)}"` : "";
+    return `<img src="${src}"${styleAttr}${renderAlt(info.altText)}/>`;
   }
 
   renderFootnoteRef(id) {
@@ -732,68 +837,50 @@ class WmlConversionContext {
     return out;
   }
 
-  async renderHeaderFooterSections() {
-    const hf = await this.getHeaderFooterContent();
-    const header = hf?.headerHtml ? [`<div class="${escapeHtml(this.settings.cssClassPrefix)}header">${hf.headerHtml}</div>`] : [];
-    const footer = hf?.footerHtml ? [`<div class="${escapeHtml(this.settings.cssClassPrefix)}footer">${hf.footerHtml}</div>`] : [];
-    if (header.length || footer.length) {
-      this.generatedCssText += `\n.${this.settings.cssClassPrefix}header,.${this.settings.cssClassPrefix}footer{color:inherit;opacity:0.85;font-size:0.9em}`;
-      this.generatedCssText += `\n.${this.settings.cssClassPrefix}header{margin-bottom:1em}`;
-      this.generatedCssText += `\n.${this.settings.cssClassPrefix}footer{margin-top:1em}`;
-    }
-    return { header, footer };
-  }
-
-  async getHeaderFooterContent() {
-    if (this._headerFooter) return this._headerFooter;
-    const body = this.findBody();
-    const sectPrs = getSectPrs(body);
-    if (!sectPrs.length) {
-      this._headerFooter = null;
-      return null;
-    }
-
-    // For now, pick the last section properties (most common for single-section docs).
-    // If multiple sections exist with different headers/footers, emit a warning.
-    const refsLast = selectHeaderFooterRefs(sectPrs[sectPrs.length - 1]);
-    const headerRid = pickRef(refsLast.header);
-    const footerRid = pickRef(refsLast.footer);
-
-    if (sectPrs.length > 1) {
-      // Detect if references differ.
-      const firstRefs = selectHeaderFooterRefs(sectPrs[0]);
-      const h0 = pickRef(firstRefs.header);
-      const f0 = pickRef(firstRefs.footer);
-      if (h0 !== headerRid || f0 !== footerRid) {
-        this.warnings.push({
-          code: "OXPT_MULTIPLE_SECTIONS",
-          message: "Multiple sections detected; rendering header/footer from last section only",
-          part: "/word/document.xml",
-        });
-      }
-    }
-
-    const headerHtml = headerRid ? await this.renderHeaderFooterByRelId(headerRid) : "";
-    const footerHtml = footerRid ? await this.renderHeaderFooterByRelId(footerRid) : "";
-    this._headerFooter = { headerHtml, footerHtml };
-    return this._headerFooter;
-  }
-
   async renderHeaderFooterByRelId(rid) {
+    const cacheKey = String(rid);
+    if (this._headerFooterByRid.has(cacheKey)) return this._headerFooterByRid.get(cacheKey);
     const rel = this.rels?.byId.get(String(rid));
     if (!rel) {
       this.warnings.push({ code: "OXPT_HF_MISSING_REL", message: `Missing header/footer relationship: ${rid}`, part: "/word/_rels/document.xml.rels" });
+      this._headerFooterByRid.set(cacheKey, "");
       return "";
     }
     const partUri = resolveWordTarget(rel.target);
     const xml = await readWmlPartXml(this.doc, partUri);
     if (!xml) {
       this.warnings.push({ code: "OXPT_HF_MISSING_PART", message: `Missing header/footer part: ${partUri}`, part: partUri });
+      this._headerFooterByRid.set(cacheKey, "");
       return "";
     }
     const body = findWBody(xml.root) ?? xml.root;
     const blocks = await renderBodyChildren(this, body);
-    return blocks.join("");
+    const html = blocks.join("");
+    this._headerFooterByRid.set(cacheKey, html);
+    return html;
+  }
+
+  renderCommentRef(id) {
+    if (!this.settings.includeComments) return "";
+    const cid = id == null ? "" : String(id);
+    if (!cid) return "";
+    if (!this.comments?.byId.has(cid)) return `<sup>[c${escapeHtml(cid)}]</sup>`;
+    return `<sup><a href="#${escapeHtml(this.settings.cssClassPrefix)}comment-${escapeHtml(cid)}">c${escapeHtml(cid)}</a></sup>`;
+  }
+
+  renderCommentsSection() {
+    if (!this.settings.includeComments) return [];
+    if (!this.comments?.orderedIds?.length) return [];
+    const items = [];
+    for (const id of this.comments.orderedIds) {
+      const text = this.comments.byId.get(id) ?? "";
+      items.push(
+        `<li id="${escapeHtml(this.settings.cssClassPrefix)}comment-${escapeHtml(id)}">${escapeHtml(text)}</li>`,
+      );
+    }
+    if (!items.length) return [];
+    this.generatedCssText += `\n.${this.settings.cssClassPrefix}comments{margin-top:1em;font-size:0.95em}`;
+    return [`<hr/><ol class="${escapeHtml(this.settings.cssClassPrefix)}comments">${items.join("")}</ol>`];
   }
 
   renderNotesSection(kind, notes) {
@@ -896,6 +983,30 @@ async function readNotes(doc, partUri) {
     }
 
     // Sort numeric where possible for stable output.
+    orderedIds.sort((a, b) => Number(a) - Number(b));
+    return { byId, orderedIds };
+  } catch {
+    return null;
+  }
+}
+
+async function readComments(doc, partUri) {
+  try {
+    const xml = parseXml(await doc.getPartText(partUri));
+    const byId = new Map();
+    const orderedIds = [];
+
+    for (const el of xml.root.descendants()) {
+      if (!(el instanceof XmlElement)) continue;
+      if (!isW(el, "comment")) continue;
+      const id = el.attributes.get("w:id") ?? el.attributes.get("id");
+      if (id == null) continue;
+      const idStr = String(id);
+      const text = [...el.descendantsByNameNS(W_NS, "t")].map((t) => t.textContent()).join("");
+      byId.set(idStr, text);
+      orderedIds.push(idStr);
+    }
+
     orderedIds.sort((a, b) => Number(a) - Number(b));
     return { byId, orderedIds };
   } catch {
@@ -1073,6 +1184,24 @@ function halfPointsToPt(halfPoints) {
   return Number(halfPoints) / 2;
 }
 
+function lineHeightCss(line, lineRule) {
+  if (line == null) return null;
+  const n = Number(line);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const rule = lineRule == null ? "auto" : String(lineRule);
+
+  // Word stores:
+  // - w:lineRule="auto": w:line in 240ths of a line (240 == single)
+  // - w:lineRule="exact"/"atLeast": w:line in twips
+  if (rule === "auto") {
+    const mult = n / 240;
+    const v = String(Math.round(mult * 1000) / 1000);
+    return `line-height:${v}`;
+  }
+
+  return `line-height:${twipsToPt(n)}pt`;
+}
+
 function mapJustificationToCssTextAlign(jc) {
   const v = String(jc);
   if (v === "left") return "left";
@@ -1100,4 +1229,24 @@ function mapHighlightToCss(val) {
 function cssString(s) {
   const v = String(s).replaceAll('"', '\\"');
   return `"${v}"`;
+}
+
+function suggestedImgStyle(info) {
+  const w = emusToPx(info.widthEmus);
+  const h = emusToPx(info.heightEmus);
+  if (w == null && h == null) return null;
+  const rules = [];
+  if (w != null) rules.push(`width:${w}px`);
+  if (h != null) rules.push(`height:${h}px`);
+  rules.push("max-width:100%");
+  if (w != null && h == null) rules.push("height:auto");
+  return rules.join(";");
+}
+
+function emusToPx(emus) {
+  if (emus == null) return null;
+  const n = Number(emus);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  // 1 inch == 914400 EMUs; assume 96 CSS px per inch.
+  return Math.max(1, Math.round((n * 96) / 914400));
 }

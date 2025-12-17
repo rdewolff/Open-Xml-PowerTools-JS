@@ -105,6 +105,9 @@ export function parseParagraphProperties(pPr) {
   const jcVal = jc?.attributes.get("w:val") ?? jc?.attributes.get("val");
   if (jcVal) out.jc = String(jcVal);
 
+  const bidi = firstChildW(pPr, "bidi");
+  if (bidi) out.bidi = true;
+
   const spacing = firstChildW(pPr, "spacing");
   if (spacing) {
     out.before = toInt(spacing.attributes.get("w:before") ?? spacing.attributes.get("before"));
@@ -141,6 +144,7 @@ export function parseRunProperties(rPr) {
   const out = {};
   if (firstChildW(rPr, "b")) out.bold = true;
   if (firstChildW(rPr, "i")) out.italic = true;
+  if (firstChildW(rPr, "rtl")) out.rtl = true;
 
   const u = firstChildW(rPr, "u");
   if (u) {
@@ -192,4 +196,3 @@ function toInt(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
-

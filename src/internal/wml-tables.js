@@ -70,6 +70,60 @@ export function tableBordersToCss(tblPr) {
   return css;
 }
 
+export function tableWidthToCss(tblPr) {
+  const tblW = tblPr ? firstChildW(tblPr, "tblW") : null;
+  if (!tblW) return null;
+  const type = tblW.attributes.get("w:type") ?? tblW.attributes.get("type") ?? "dxa";
+  const w = tblW.attributes.get("w:w") ?? tblW.attributes.get("w") ?? null;
+  if (!w) return null;
+  const n = Number(w);
+  if (!Number.isFinite(n)) return null;
+  if (String(type) === "pct") {
+    // stored as 50ths of a percent
+    return `${n / 50}%`;
+  }
+  if (String(type) === "auto") return null;
+  return `${n / 20}pt`;
+}
+
+export function tableCellPaddingToCss(tblPr) {
+  const tblCellMar = tblPr ? firstChildW(tblPr, "tblCellMar") : null;
+  if (!tblCellMar) return null;
+  const map = { top: "padding-top", left: "padding-left", bottom: "padding-bottom", right: "padding-right" };
+  const rules = [];
+  for (const [side, cssName] of Object.entries(map)) {
+    const el = firstChildW(tblCellMar, side);
+    if (!el) continue;
+    const w = el.attributes.get("w:w") ?? el.attributes.get("w") ?? null;
+    const type = el.attributes.get("w:type") ?? el.attributes.get("type") ?? "dxa";
+    if (!w) continue;
+    const n = Number(w);
+    if (!Number.isFinite(n)) continue;
+    if (String(type) === "dxa") rules.push(`${cssName}:${n / 20}pt`);
+  }
+  return rules.length ? rules.join(";") : null;
+}
+
+export function tableShadingToCss(tblPr) {
+  const shd = tblPr ? firstChildW(tblPr, "shd") : null;
+  if (!shd) return null;
+  const fill = shd.attributes.get("w:fill") ?? shd.attributes.get("fill") ?? null;
+  if (!fill || String(fill) === "auto") return null;
+  return `#${String(fill)}`;
+}
+
+export function rowShadingToCss(trPr) {
+  const shd = trPr ? firstChildW(trPr, "shd") : null;
+  if (!shd) return null;
+  const fill = shd.attributes.get("w:fill") ?? shd.attributes.get("fill") ?? null;
+  if (!fill || String(fill) === "auto") return null;
+  return `#${String(fill)}`;
+}
+
+export function tableBidiVisual(tblPr) {
+  return !!(tblPr && firstChildW(tblPr, "bidiVisual"));
+}
+
 export function cellBordersToCss(tcPr) {
   const bordersEl = tcPr ? firstChildW(tcPr, "tcBorders") : null;
   if (!bordersEl) return null;

@@ -102,10 +102,11 @@ type WmlToHtmlConverterSettings = {
   pageTitle?: string;
   cssClassPrefix?: string;                 // default "pt-"
   fabricateCssClasses?: boolean;           // default true
-  generalCss?: string;                     // default `span { white-space: pre-wrap; }`
+  generalCss?: string;                     // default `span { white-space: pre-wrap; tab-size: 4; }`
   additionalCss?: string;                  // appended after generated CSS
   restrictToSupportedLanguages?: boolean;  // default false
   restrictToSupportedNumberingFormats?: boolean; // default false
+  includeComments?: boolean;               // default false
 
   // List numbering text generation, keyed by locale (e.g., "en-US", "fr-FR").
   // Signature matches the C# intent: (listLevelText, levelNumber, numFmt) => renderedText
@@ -308,7 +309,7 @@ Definition of done:
 - Common DOCX files render readable HTML with correct paragraph/list/table structure.
 
 Implemented (current):
-- Headings, hyperlinks, lists, tables (incl. `gridSpan`/`vMerge`), images (data URLs by default), headers/footers, footnotes/endnotes.
+- Headings, hyperlinks, lists, tables (incl. `gridSpan`/`vMerge`), images (data URLs by default, with basic size hints), headers/footers (per-section), footnotes/endnotes, comments (optional).
 
 ### Phase 4 — Fidelity + CSS parity
 
