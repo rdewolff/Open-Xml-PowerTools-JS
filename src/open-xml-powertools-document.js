@@ -30,13 +30,17 @@ export class OpenXmlPowerToolsDocument {
 
   async detectType() {
     const pkg = await OpcPackage.fromBytes(this.bytes, { adapter: this.zipAdapter });
+    try {
+      await pkg.assertIsValidOpc();
+    } catch {
+      return "unknown";
+    }
+
     const officeUri = await pkg.getOfficeDocumentPartUri().catch(() => null);
     if (officeUri === "/word/document.xml") return "docx";
     if (officeUri === "/xl/workbook.xml") return "xlsx";
     if (officeUri === "/ppt/presentation.xml") return "pptx";
-    if (officeUri) return "opc";
-    // Could still be an OPC package without officeDocument relationship; treat as unknown.
-    return "unknown";
+    return "opc";
   }
 }
 
