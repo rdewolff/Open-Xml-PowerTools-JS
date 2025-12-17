@@ -1,5 +1,6 @@
-import { parseXml, XmlDocument, XmlElement, XmlText } from "./internal/xml.js";
+import { parseXml, serializeXml, XmlDocument, XmlElement, XmlText } from "./internal/xml.js";
 import { OpenXmlPowerToolsError } from "./open-xml-powertools-error.js";
+import { OpcPackage } from "./internal/opc.js";
 
 const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
@@ -13,12 +14,67 @@ export const TextReplacer = {
       throw new OpenXmlPowerToolsError("OXPT_INVALID_ARGUMENT", "replace must be a string");
     }
 
-    const mainXmlText = await doc.getPartText("/word/document.xml");
-    const mainXml = parseXml(mainXmlText);
-    const newMainXml = transformDocument(mainXml, search, replace, matchCase);
-    return doc.replacePartXml("/word/document.xml", newMainXml);
+    const pkg = await OpcPackage.fromBytes(doc.bytes, { adapter: doc.zipAdapter });
+    const partUris = listWordprocessingTextParts(pkg);
+    const replaceParts = {};
+    const enc = new TextEncoder();
+
+    for (const partUri of partUris) {
+      let xmlText;
+      try {
+        xmlText = await doc.getPartText(partUri);
+      } catch {
+        continue;
+      }
+      let xml;
+      try {
+        xml = parseXml(xmlText);
+      } catch {
+        continue;
+      }
+      if (!isWordprocessingRoot(xml.root)) continue;
+      const newXml = transformDocument(xml, search, replace, matchCase);
+      const outText = serializeXml(newXml, { xmlDeclaration: true });
+      replaceParts[partUri] = enc.encode(outText);
+    }
+
+    if (!Object.keys(replaceParts).length) return doc;
+  return doc.replaceParts(replaceParts);
   },
 };
+
+function listWordprocessingTextParts(pkg) {
+  const out = [];
+  for (const name of pkg.listPartNames()) {
+    const n = String(name);
+    if (!n.startsWith("word/")) continue;
+    if (!n.endsWith(".xml")) continue;
+    if (n === "word/document.xml") out.push("/word/document.xml");
+    else if (n === "word/footnotes.xml") out.push("/word/footnotes.xml");
+    else if (n === "word/endnotes.xml") out.push("/word/endnotes.xml");
+    else if (n === "word/comments.xml") out.push("/word/comments.xml");
+    else if (/^word\/header\d+\.xml$/.test(n)) out.push(`/${n}`);
+    else if (/^word\/footer\d+\.xml$/.test(n)) out.push(`/${n}`);
+  }
+  out.sort();
+  return out;
+}
+
+function isWordprocessingRoot(root) {
+  if (!(root instanceof XmlElement)) return false;
+  const { prefix } = root.nameParts();
+  const ns = prefix === "w" ? W_NS : root.lookupNamespaceUri(prefix);
+  if (ns !== W_NS) return false;
+  const local = root.nameParts().local;
+  return (
+    local === "document" ||
+    local === "hdr" ||
+    local === "ftr" ||
+    local === "footnotes" ||
+    local === "endnotes" ||
+    local === "comments"
+  );
+}
 
 function transformDocument(xmlDoc, search, replace, matchCase) {
   const root = cloneElement(xmlDoc.root);
