@@ -66,7 +66,7 @@ class OpenXmlPowerToolsDocument {
   toBytes(): Uint8Array;        // returns a copy for immutability
   toBase64(): string;
 
-  detectType(): "docx" | "pptx" | "xlsx" | "opc" | "unknown"; // v0 supports docx/opc
+  detectType(): Promise<"docx" | "pptx" | "xlsx" | "opc" | "unknown">; // async (ZIP/OPC inspection)
 }
 ```
 
@@ -119,6 +119,12 @@ type WmlToHtmlConverterSettings = {
 
   // Advanced: control how the result HTML is produced (string vs XmlElement)
   output?: { format?: "string" | "xml" };
+
+  // Advanced: control in-memory preprocessing (defaults match C# converter behavior)
+  preprocess?: {
+    acceptRevisions?: boolean;   // default true
+    simplifyMarkup?: boolean;    // default true
+  };
 };
 
 type ImageInfo = {
@@ -301,6 +307,9 @@ Definition of done:
 Definition of done:
 - Common DOCX files render readable HTML with correct paragraph/list/table structure.
 
+Implemented (current):
+- Headings, hyperlinks, lists, tables (incl. `gridSpan`/`vMerge`), images (data URLs by default), headers/footers, footnotes/endnotes.
+
 ### Phase 4 — Fidelity + CSS parity
 
 - Expand formatting assembler to match C# behavior more closely:
@@ -314,7 +323,7 @@ Definition of done:
 ### Phase 5 — HTML → DOCX (roadmap)
 
 - Port `HtmlToWmlConverter` surface:
-  - `convertHtmlToWml(defaultCss, authorCss, userCss, htmlOrXhtml, settings, templateDoc?)`
+  - `convertHtmlToWml(defaultCss, authorCss, userCss, htmlOrXhtml, settings, templateDoc?, annotatedHtmlDumpFileName?)`
 - Implement a small HTML parser (or accept a restricted XHTML-in-XML input first).
 
 Definition of done:
