@@ -474,6 +474,7 @@ class WmlConversionContext {
     const ctx = new WmlConversionContext({ doc, mainXml, warnings, settings, rels, numbering, contentTypes, styles });
     ctx.footnotes = footnotes;
     ctx.endnotes = endnotes;
+    ctx._documentLang = detectDocumentLanguage(mainXml.root);
     return ctx;
   }
 
@@ -775,6 +776,31 @@ class WmlConversionContext {
   getListItemTextImplementation() {
     const impls = this.settings.listItemImplementations;
     if (!impls) return null;
+    const lang = this._documentLang;
+    if (lang && typeof impls[lang] === "function") return impls[lang];
+
+    if (lang && this.settings.restrictToSupportedLanguages) {
+      const hasFallback =
+        typeof impls.default === "function" ||
+        typeof impls["en-US"] === "function" ||
+        Object.values(impls).some((v) => typeof v === "function");
+      if (!hasFallback) {
+        this.warnings.push({
+          code: "OXPT_LIST_LANG_UNSUPPORTED",
+          message: `No listItemImplementations for document language '${lang}' (and no fallback)`,
+          part: "/word/document.xml",
+        });
+        return null;
+      }
+
+      // Warn but still fall back to keep output usable.
+      this.warnings.push({
+        code: "OXPT_LIST_LANG_UNSUPPORTED",
+        message: `No listItemImplementations for document language '${lang}', using fallback`,
+        part: "/word/document.xml",
+      });
+    }
+
     if (typeof impls.default === "function") return impls.default;
     if (typeof impls["en-US"] === "function") return impls["en-US"];
     for (const v of Object.values(impls)) {
@@ -789,6 +815,17 @@ class WmlConversionContext {
       `.${this.settings.cssClassPrefix}li-marker { display: inline-block; min-width: 2.2em; }`,
     ].join("\n");
   }
+}
+
+function detectDocumentLanguage(root) {
+  // Heuristic: first encountered w:lang/@w:val or w:lang/@val.
+  for (const el of root.descendants()) {
+    if (!(el instanceof XmlElement)) continue;
+    if (!isW(el, "lang")) continue;
+    const val = el.attributes.get("w:val") ?? el.attributes.get("val");
+    if (val) return String(val);
+  }
+  return null;
 }
 
 async function readNotes(doc, partUri) {
