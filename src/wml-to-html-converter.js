@@ -79,7 +79,11 @@ async function renderBodyChildren(ctx, body) {
       const listInfo = ctx.getParagraphListInfo(child);
       if (listInfo) {
         ensureListStack(ctx, out, listStack, listInfo);
-        out.push(`<li>${await renderParagraphContents(ctx, child)}</li>`);
+        const levelState = listStack[listStack.length - 1];
+        levelState.counter = (levelState.counter ?? 0) + 1;
+        const marker = ctx.renderListMarker(listInfo, levelState.counter);
+        const markerHtml = marker ? `<span class="${escapeHtml(marker.className)}">${escapeHtml(marker.text)}</span>` : "";
+        out.push(`<li>${markerHtml}${await renderParagraphContents(ctx, child)}</li>`);
         continue;
       }
 
@@ -207,13 +211,15 @@ function ensureListStack(ctx, out, listStack, listInfo) {
   while (listStack.length < listInfo.level + 1) {
     const { tag, attrs } = listInfo;
     out.push(`<${tag}${renderAttrs(attrs)}>`);
-    listStack.push({ tag, attrs });
+    listStack.push({ tag, attrs, counter: 0, listInfo });
   }
   const current = listStack[listStack.length - 1];
   if (current.tag !== listInfo.tag) {
     out.push(`</${listStack.pop().tag}>`);
     out.push(`<${listInfo.tag}${renderAttrs(listInfo.attrs)}>`);
-    listStack.push({ tag: listInfo.tag, attrs: listInfo.attrs });
+    listStack.push({ tag: listInfo.tag, attrs: listInfo.attrs, counter: 0, listInfo });
+  } else {
+    current.listInfo = listInfo;
   }
 }
 
@@ -419,9 +425,10 @@ class WmlConversionContext {
     if (!numId) return null;
     const lvl = this.numbering?.getLevel(numId, level);
     const numFmt = lvl?.numFmt ?? "decimal";
+    const lvlText = lvl?.lvlText ?? "";
     const tag = toListTag(numFmt, this.settings.restrictToSupportedNumberingFormats, this.warnings);
     const attrs = toListAttrs(numFmt);
-    return { numId, level, numFmt, tag, attrs };
+    return { numId, level, numFmt, lvlText, tag, attrs };
   }
 
   getParagraphClass(p) {
@@ -454,7 +461,13 @@ class WmlConversionContext {
     const rel = this.rels?.byId.get(rid);
     if (!rel) return "";
     const partUri = resolveWordTarget(rel.target);
-    const bytes = await this.doc.getPartBytes(partUri);
+    let bytes;
+    try {
+      bytes = await this.doc.getPartBytes(partUri);
+    } catch (e) {
+      this.warnings.push({ code: "OXPT_IMAGE_MISSING_PART", message: `Missing image part: ${partUri}`, part: partUri });
+      return "";
+    }
     const contentType = this.contentTypes?.getContentType(partUri) ?? "application/octet-stream";
     const info = {
       contentType,
@@ -476,6 +489,34 @@ class WmlConversionContext {
     const b64 = bytesToBase64(bytes);
     const src = `data:${contentType};base64,${b64}`;
     return `<img src="${src}"${renderAlt(info.altText)}/>`;
+  }
+
+  renderListMarker(listInfo, index1Based) {
+    const impl = this.getListItemTextImplementation();
+    if (!impl) return null;
+    this.ensureGeneratedMarkerCss();
+    const levelText = listInfo.lvlText ?? "";
+    const text = impl(levelText, index1Based, listInfo.numFmt);
+    if (text == null) return null;
+    return { className: `${this.settings.cssClassPrefix}li-marker`, text: String(text) };
+  }
+
+  getListItemTextImplementation() {
+    const impls = this.settings.listItemImplementations;
+    if (!impls) return null;
+    if (typeof impls.default === "function") return impls.default;
+    if (typeof impls["en-US"] === "function") return impls["en-US"];
+    for (const v of Object.values(impls)) {
+      if (typeof v === "function") return v;
+    }
+    return null;
+  }
+
+  ensureGeneratedMarkerCss() {
+    if (this.generatedCssText.includes(`.${this.settings.cssClassPrefix}li-marker`)) return;
+    this.generatedCssText += [
+      `.${this.settings.cssClassPrefix}li-marker { display: inline-block; min-width: 2.2em; }`,
+    ].join("\n");
   }
 }
 
