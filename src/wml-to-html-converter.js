@@ -2,7 +2,6 @@ import { parseXml, XmlDocument, XmlElement, XmlText, serializeXml } from "./inte
 import { bytesToBase64 } from "./util/base64.js";
 
 const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-const R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
 export const WmlToHtmlConverter = {
   async convertToHtml(doc, settings = {}) {
