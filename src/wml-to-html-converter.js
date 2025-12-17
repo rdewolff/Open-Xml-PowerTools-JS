@@ -126,12 +126,22 @@ async function renderParagraphContents(ctx, p) {
       inner.push(await renderHyperlink(ctx, child));
       continue;
     }
+    if (isW(child, "fldSimple")) {
+      // Render visible field result (runs inside), ignore instruction if present.
+      const runs = [];
+      for (const c of child.children ?? []) {
+        if (c instanceof XmlElement && isW(c, "r")) runs.push(await renderRun(ctx, p, c));
+      }
+      inner.push(runs.join(""));
+      continue;
+    }
   }
   return inner.join("");
 }
 
 async function renderHyperlink(ctx, hyperlink) {
   const rid = hyperlink.attributes.get("r:id") ?? hyperlink.attributes.get("id");
+  const anchor = hyperlink.attributes.get("w:anchor") ?? hyperlink.attributes.get("anchor");
   const href = rid ? ctx.getHyperlinkTarget(String(rid)) : null;
   const inner = [];
   for (const c of hyperlink.children ?? []) {
@@ -139,8 +149,9 @@ async function renderHyperlink(ctx, hyperlink) {
     if (isW(c, "r")) inner.push(await renderRun(ctx, null, c));
   }
   const contents = inner.join("");
-  if (!href) return contents;
-  return `<a href="${escapeHtml(href)}">${contents}</a>`;
+  if (href) return `<a href="${escapeHtml(href)}">${contents}</a>`;
+  if (anchor) return `<a href="#${escapeHtml(String(anchor))}">${contents}</a>`;
+  return contents;
 }
 
 async function renderRun(ctx, paragraph, r) {
@@ -156,6 +167,9 @@ async function renderRun(ctx, paragraph, r) {
     if (isW(child, "t")) pieces.push(escapeHtml(child.textContent()));
     else if (isW(child, "tab")) pieces.push("    ");
     else if (isW(child, "br")) pieces.push("<br/>");
+    else if (isW(child, "cr")) pieces.push("<br/>");
+    else if (isW(child, "noBreakHyphen")) pieces.push("‑");
+    else if (isW(child, "softHyphen")) pieces.push("\u00ad");
     else if (isW(child, "footnoteReference")) {
       const id = child.attributes.get("w:id") ?? child.attributes.get("id");
       pieces.push(ctx.renderFootnoteRef(id));
@@ -163,6 +177,10 @@ async function renderRun(ctx, paragraph, r) {
     else if (isW(child, "endnoteReference")) {
       const id = child.attributes.get("w:id") ?? child.attributes.get("id");
       pieces.push(ctx.renderEndnoteRef(id));
+    }
+    else if (isW(child, "instrText") || isW(child, "fldChar")) {
+      // Field code plumbing; ignore by default (visible text typically appears as w:t between separate/end).
+      continue;
     }
     else if (isW(child, "drawing") || isW(child, "pict")) pieces.push(await renderImageFromContainer(ctx, child));
     else if (isW(child, "delText")) {
