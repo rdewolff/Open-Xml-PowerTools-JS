@@ -1,6 +1,7 @@
 import { OpenXmlPowerToolsDocument, coerceToBytes } from "./open-xml-powertools-document.js";
 import { OpcPackage } from "./internal/opc.js";
-import { parseXml } from "./internal/xml.js";
+import { parseXml, serializeXml } from "./internal/xml.js";
+import { getDefaultZipAdapter } from "./internal/zip-adapter-auto.js";
 
 const WORD_MAIN_DOCUMENT_URI = "/word/document.xml";
 const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
@@ -20,6 +21,11 @@ export class WmlDocument extends OpenXmlPowerToolsDocument {
     return pkg.getPartBytes(uri);
   }
 
+  async getPartText(uri) {
+    const bytes = await this.getPartBytes(uri);
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+
   async getMainDocumentXml() {
     const xmlBytes = await this.getPartBytes(WORD_MAIN_DOCUMENT_URI);
     const xmlText = new TextDecoder("utf-8").decode(xmlBytes);
@@ -37,5 +43,17 @@ export class WmlDocument extends OpenXmlPowerToolsDocument {
     const text = paragraphs.join("\n");
     return { paragraphs, text };
   }
-}
 
+  async replacePartXml(partUri, xmlDocumentOrElement) {
+    const xmlText = serializeXml(xmlDocumentOrElement, { xmlDeclaration: true });
+    const bytes = new TextEncoder().encode(xmlText);
+    return this.replaceParts({ [partUri]: bytes });
+  }
+
+  async replaceParts(replaceParts, options = {}) {
+    const adapter = options.adapter ?? (await getDefaultZipAdapter());
+    const pkg = await OpcPackage.fromBytes(this.bytes, { adapter });
+    const newBytes = await pkg.toBytes({ replaceParts, adapter, deflateLevel: options.deflateLevel });
+    return new WmlDocument(newBytes, { fileName: this.fileName });
+  }
+}

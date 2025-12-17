@@ -5,6 +5,17 @@ export function parseXml(xmlText) {
   return parser.parse();
 }
 
+export function serializeXml(node, options = {}) {
+  const { xmlDeclaration = false } = options;
+  const root = node instanceof XmlDocument ? node.root : node;
+  if (!(root instanceof XmlElement)) {
+    throw new OpenXmlPowerToolsError("OXPT_XML_INVALID", "serializeXml expects an XmlDocument or XmlElement");
+  }
+  const body = serializeElement(root);
+  if (!xmlDeclaration) return body;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n${body}`;
+}
+
 class XmlParser {
   constructor(text) {
     this.text = text;
@@ -276,4 +287,34 @@ export class XmlText {
   constructor(text) {
     this.text = text;
   }
+}
+
+function serializeElement(el) {
+  let out = `<${el.qname}`;
+  for (const [name, value] of el.attributes) {
+    out += ` ${name}="${escapeAttribute(value)}"`;
+  }
+  if (!el.children.length) return `${out}/>`;
+  out += ">";
+  for (const child of el.children) {
+    if (child instanceof XmlText) out += escapeText(child.text);
+    else out += serializeElement(child);
+  }
+  out += `</${el.qname}>`;
+  return out;
+}
+
+function escapeText(text) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function escapeAttribute(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }

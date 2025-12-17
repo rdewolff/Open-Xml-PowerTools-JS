@@ -74,10 +74,44 @@ export class OpcPackage {
       throw new OpenXmlPowerToolsError("OXPT_INVALID_DOCX", "Missing _rels/.rels");
     }
   }
+
+  async toBytes({ replaceParts, adapter, deflateLevel } = {}) {
+    const resolvedAdapter = adapter ?? (await getDefaultZipAdapter());
+    const byName = normalizeReplaceParts(replaceParts);
+
+    const entries = await Promise.all(
+      this.zip.entries.map(async (e) => {
+        const name = e.name;
+        const replacement = byName.get(name);
+        const isDir = name.endsWith("/");
+        const bytes = replacement ?? (isDir ? new Uint8Array() : await e.getBytes());
+        return { name, bytes, compressionMethod: isDir ? 0 : 8 };
+      }),
+    );
+
+    // Include any new entries supplied in replaceParts but not present in the original.
+    for (const [name, bytes] of byName) {
+      if (this.zip.getEntry(name)) continue;
+      const isDir = name.endsWith("/");
+      entries.push({ name, bytes, compressionMethod: isDir ? 0 : 8 });
+    }
+
+    return ZipArchive.build(entries, { adapter: resolvedAdapter, level: deflateLevel ?? 6 });
+  }
 }
 
 function normalizePartUri(target) {
   if (!target) return null;
   if (target.startsWith("/")) return target;
   return `/${target}`;
+}
+
+function normalizeReplaceParts(replaceParts) {
+  const byName = new Map();
+  if (!replaceParts) return byName;
+  for (const [key, value] of replaceParts instanceof Map ? replaceParts : Object.entries(replaceParts)) {
+    const name = key.startsWith("/") ? key.slice(1) : key;
+    byName.set(name, value instanceof Uint8Array ? value : new Uint8Array(value));
+  }
+  return byName;
 }
