@@ -6,7 +6,14 @@ export async function getDefaultZipAdapter() {
   // so that the main package can be imported in browsers without bundler shims.
   if (isNodeLike()) {
     try {
-      const zlib = await import("node:zlib");
+      // Hide the specifier from static bundler resolution (Vite/Webpack) so that
+      // this package can still be imported in browser bundles.
+      const nodeZlibSpecifier = "node:zlib";
+      const zlib = await import(
+        /* webpackIgnore: true */
+        /* @vite-ignore */
+        nodeZlibSpecifier
+      );
       return {
         inflateRaw(data) {
           return new Uint8Array(zlib.inflateRawSync(data));

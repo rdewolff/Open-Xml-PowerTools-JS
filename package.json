@@ -1,8 +1,10 @@
 {
   "name": "open-xml-powertools-js",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "type": "module",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
   "files": [
     "src/",
     "README.md",
@@ -11,8 +13,16 @@
     "spec.md"
   ],
   "exports": {
-    ".": "./src/index.js",
-    "./node": "./src/node.js"
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./node": {
+      "types": "./src/node.d.ts",
+      "default": "./src/node.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
   },
   "scripts": {
     "test": "node --test test/**/*.test.js"
