@@ -16,13 +16,17 @@ This repo currently focuses on:
 
 ## Install / Use
 
-This project is currently designed to be used directly from source (or via git dependency) as an ESM module.
+Install from npm:
+
+```sh
+npm i open-xml-powertools-js
+```
 
 ### Node.js
 
 ```js
 import { readFile } from "node:fs/promises";
-import { WmlDocument, WmlToHtmlConverter } from "./src/index.js";
+import { WmlDocument, WmlToHtmlConverter } from "open-xml-powertools-js";
 
 const bytes = new Uint8Array(await readFile("input.docx"));
 const doc = WmlDocument.fromBytes(bytes, { fileName: "input.docx" });
@@ -38,8 +42,8 @@ await Bun?.write?.("output.html", html); // optional (Bun)
 Node helper entry (optional):
 
 ```js
-import { readWmlDocument } from "./src/node.js";
-import { WmlToHtmlConverter } from "./src/index.js";
+import { readWmlDocument } from "open-xml-powertools-js/node";
+import { WmlToHtmlConverter } from "open-xml-powertools-js";
 
 const doc = await readWmlDocument("input.docx");
 const { html } = await WmlToHtmlConverter.convertToHtml(doc);
@@ -68,7 +72,7 @@ Minimal browser example:
 ```html
 <input id="file" type="file" accept=".docx" />
 <script type="module">
-  import { WmlDocument, WmlToHtmlConverter } from "./src/index.js";
+  import { WmlDocument, WmlToHtmlConverter } from "./node_modules/open-xml-powertools-js/src/index.js";
 
   document.getElementById("file").addEventListener("change", async (e) => {
     const f = e.target.files[0];
@@ -216,6 +220,10 @@ This project is a JavaScript **port/derivative** of **Open-Xml-PowerTools** (C#)
 - Required upstream notices and the full upstream MIT license text are included in `NOTICE.md`.
 
 This repo does **not** use the Open XML SDK; instead it re-implements the needed ZIP/OPC and XML manipulation in JavaScript to remain dependency-free and browser-compatible.
+
+### Port credit
+
+This JavaScript port was converted/bootstrapped by **Romain de Wolff** (Whisperit.ai) with AI assistance using **Codex 5.2**.
 
 ### Trademarks / endorsement
 
