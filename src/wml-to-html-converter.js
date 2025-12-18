@@ -444,6 +444,16 @@ function closeAllLists(out, listStack) {
 }
 
 async function renderImageFromContainer(ctx, container) {
+  // Prefer SVG when present (Office often stores SVG + a raster fallback in <a:blip>).
+  const svgBlip = findFirstByLocal(container, "svgBlip");
+  if (svgBlip instanceof XmlElement) {
+    const embed = svgBlip.attributes.get("r:embed") ?? svgBlip.attributes.get("embed");
+    if (embed) {
+      const html = await ctx.renderImage(String(embed), container);
+      if (html) return html;
+    }
+  }
+
   const blip = findFirstByLocal(container, "blip");
   if (blip instanceof XmlElement) {
     const embed = blip.attributes.get("r:embed") ?? blip.attributes.get("embed");
@@ -451,7 +461,11 @@ async function renderImageFromContainer(ctx, container) {
   }
   const imagedata = findFirstByLocal(container, "imagedata");
   if (imagedata instanceof XmlElement) {
-    const rid = imagedata.attributes.get("r:id") ?? imagedata.attributes.get("id");
+    const rid =
+      imagedata.attributes.get("r:id") ??
+      imagedata.attributes.get("id") ??
+      imagedata.attributes.get("o:relid") ??
+      imagedata.attributes.get("relid");
     if (rid) return await ctx.renderImage(String(rid), container);
   }
   return "";
@@ -617,6 +631,9 @@ class WmlConversionContext {
     this.endnotes = null;
     this.comments = null;
     this._headerFooterByRid = new Map();
+    this._relsByPartUri = new Map();
+    this._currentPartUri = "/word/document.xml";
+    this._currentRels = rels;
   }
 
   static async create(doc, mainXml, warnings, settings) {
@@ -634,7 +651,31 @@ class WmlConversionContext {
     ctx.endnotes = endnotes;
     ctx.comments = comments;
     ctx._documentLang = detectDocumentLanguage(mainXml.root);
+    ctx._relsByPartUri.set("/word/document.xml", rels);
     return ctx;
+  }
+
+  async getRelationshipsForPart(partUri) {
+    const normalized = partUri.startsWith("/") ? partUri : `/${partUri}`;
+    if (this._relsByPartUri.has(normalized)) return this._relsByPartUri.get(normalized);
+    const relsPartUri = relsPartUriForPartUri(normalized);
+    const rels = await readRelationships(this.doc, relsPartUri);
+    this._relsByPartUri.set(normalized, rels);
+    return rels;
+  }
+
+  async withPartContext(partUri, fn) {
+    const normalized = partUri.startsWith("/") ? partUri : `/${partUri}`;
+    const prevPartUri = this._currentPartUri;
+    const prevRels = this._currentRels;
+    try {
+      this._currentPartUri = normalized;
+      this._currentRels = await this.getRelationshipsForPart(normalized);
+      return await fn();
+    } finally {
+      this._currentPartUri = prevPartUri;
+      this._currentRels = prevRels;
+    }
   }
 
   findBody() {
@@ -815,7 +856,7 @@ class WmlConversionContext {
   }
 
   getHyperlinkTarget(rid) {
-    const rel = this.rels?.byId.get(rid);
+    const rel = this._currentRels?.byId.get(rid);
     if (!rel) return null;
     if (rel.targetMode === "External") return rel.target;
     // Internal part link; not generally meaningful in HTML.
@@ -823,7 +864,7 @@ class WmlConversionContext {
   }
 
   async renderImage(rid, drawingElement) {
-    const rel = this.rels?.byId.get(rid);
+    const rel = this._currentRels?.byId.get(rid);
     if (!rel) return "";
     const partUri = resolveWordTarget(rel.target);
     let bytes;
@@ -898,10 +939,12 @@ class WmlConversionContext {
       this._headerFooterByRid.set(cacheKey, "");
       return "";
     }
-    const processed = preprocessXmlForHtml(xml, this.settings);
-    const body = findWBody(processed.root) ?? processed.root;
-    const blocks = await renderBodyChildren(this, body);
-    const html = blocks.join("");
+    const html = await this.withPartContext(partUri, async () => {
+      const processed = preprocessXmlForHtml(xml, this.settings);
+      const body = findWBody(processed.root) ?? processed.root;
+      const blocks = await renderBodyChildren(this, body);
+      return blocks.join("");
+    });
     this._headerFooterByRid.set(cacheKey, html);
     return html;
   }
@@ -1209,6 +1252,14 @@ function resolveWordTarget(target) {
   if (target.startsWith("/")) return target;
   if (target.startsWith("../")) return `/${target.replace(/^\.\.\//, "")}`;
   return `/word/${target}`;
+}
+
+function relsPartUriForPartUri(partUri) {
+  const normalized = partUri.startsWith("/") ? partUri : `/${partUri}`;
+  const idx = normalized.lastIndexOf("/");
+  const dir = idx === -1 ? "" : normalized.slice(0, idx);
+  const file = idx === -1 ? normalized.slice(1) : normalized.slice(idx + 1);
+  return `${dir}/_rels/${file}.rels`;
 }
 
 function extractAltText(drawingElement) {
